@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=84", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "predictive-maintenance-analytics"
+version = "0.1.0"
+description = "Team 3 capstone: predictive maintenance analytics platform"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.142.0",
+    "uvicorn>=0.54.0",
+    "pydantic>=2.13.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.9",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]

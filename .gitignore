@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets: never commit (§6.6, §6.8)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+
+# Databricks
+.databricks/
+spark-warehouse/
+metastore_db/
+derby.log
+
+# Power BI / Fabric (commit PBIP source, not local caches)
+**/.pbi/localSettings.json
+**/.pbi/cache.abf
+*.pbix
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+#Github Workflows
+.github/workflows/*
+.github/CODEOWNERS
