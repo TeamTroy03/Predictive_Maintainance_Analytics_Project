@@ -32,4 +32,4 @@ _TODO: equipment health, abnormal sensor behavior, maintenance effectiveness, do
 | `work_orders.csv` | Transactional | | | |
 | `sensor_events.json` | Semi-structured | | | |
 
-See also: [`data_dictionary.md`](data_dictionary.md), [`refresh_strategy.md`](refresh_strategy.md).
+See also: [`data_dictionary.md`](data/data_dictionary.md), [`refresh_strategy.md`](refresh_strategy.md).
