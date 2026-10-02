@@ -11,5 +11,5 @@ ingestion batch and can rerun a failed batch without creating uncontrolled dupli
 - Persist as Bronze Delta tables with **no business-level transformations**
 - Add ingestion timestamp, batch ID, source filename, record hash, load status
 - Schema validation and a controlled response to schema drift
-- Idempotent reruns + incremental load (or a justified full-refresh pattern, recorded in `docs/decisions/`)
+- Idempotent reruns + incremental load (or a justified full-refresh pattern, recorded in `docs/adr/`)
 - Log input, written and rejected counts, duration and failure details

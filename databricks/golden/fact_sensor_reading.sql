@@ -1,0 +1,2 @@
+-- fact_sensor_reading: one reading per equipment per timestamp (spec 6.3).
+-- See databricks/golden/README.md and docs/dimensional_model.md.

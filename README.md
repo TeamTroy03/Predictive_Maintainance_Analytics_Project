@@ -1,13 +1,13 @@
 # Team 3 — Predictive Maintenance Analytics
 
-AI and Data Capstone (Accenture / Code.Hub). Spec: [`docs/spec/`](docs/spec/).
+AI and Data Capstone (Accenture / Code.Hub). Spec: [`context/`](context/).
 
 An industrial company needs to understand equipment health, abnormal sensor behavior,
 maintenance effectiveness, downtime and recurring failure modes.
 
 ## Solution path
 
-`data/` (CSV + JSON) → Databricks Bronze → Silver → Gold (Delta star schema)
+`src/data/` (CSV + JSON) → Databricks Bronze → Silver → Gold (Delta star schema)
 → Microsoft Fabric semantic model → Power BI report,
 with FastAPI + LangChain Core exposing approved analytical tools, hosted on Azure and delivered via GitHub Actions.
 
@@ -15,17 +15,36 @@ with FastAPI + LangChain Core exposing approved analytical tools, hosted on Azur
 
 | Spec | Scope | Code | Docs |
 |---|---|---|---|
-| §4 | Dataset | `data/` | `docs/01-business-data-brief/` |
-| §6.1 | Bronze ingestion | `databricks/bronze/`, `databricks/common/` | `docs/03-databricks-implementation.md` |
-| §6.2 | Silver preparation | `databricks/silver/`, `tests/data_quality/` | `docs/04-quality-evidence/` |
-| §6.3 | Gold dimensional model | `databricks/gold/` | `docs/05-dimensional-model/` |
-| §6.4 | Fabric semantic model & report | `fabric/` | `docs/06-fabric-powerbi.md` |
-| §6.5 | LangChain Core | `app/assistant/` | `docs/07-langchain-integration.md` |
-| §6.6 | Azure fundamentals | `infra/` | `docs/09-azure-design.md` |
-| §6.7 | REST / FastAPI | `app/api/`, `postman/` | `docs/08-fastapi-integration.md` |
-| §6.8 | CI/CD | `.github/workflows/`, `Dockerfile` | `docs/10-cicd-pipeline.md` |
-| §7 | Testing & operations | `tests/` | `docs/11-testing-operations.md` |
-| §8 | Project management | — | `docs/project-management/`, `docs/decisions/` |
+| §4 | Dataset | `src/data/` | `docs/business_brief.md` |
+| §6.1 | Bronze ingestion | `databricks/bronze/`, `databricks/common/` | `docs/databricks_implementation.md` |
+| §6.2 | Silver preparation | `databricks/silver/`, `tests/data_quality/` | `docs/quality_evidence.md` |
+| §6.3 | Gold dimensional model | `databricks/golden/` | `docs/dimensional_model.md` |
+| §6.4 | Fabric semantic model & report | `fabric/` | `docs/fabric_powerbi.md` |
+| §6.5 | LangChain Core | `src/app/agent/` | `docs/langchain_integration.md` |
+| §6.6 | Azure fundamentals | `infra/` | `docs/azure_design.md` |
+| §6.7 | REST / FastAPI | `src/app/api/`, `postman/` | `docs/fastapi_integration.md` |
+| §6.8 | CI/CD | `.github/workflows/`, `Dockerfile` | `docs/cicd.md` |
+| §7 | Testing & operations | `tests/` | `docs/runbook.md` |
+| §8 | Project management | — | `docs/project_management.md`, `docs/adr/` |
+
+## Repository layout
+
+```text
+.github/workflows/   ci.yml (lint, test, image build) · deploy.yml (approval-gated)
+context/             original spec PDF
+databricks/          common/ · bronze/ · silver/ · golden/ · jobs/  (not a Python package)
+docs/                one flat .md per deliverable · adr/ · diagrams/
+fabric/              semantic-model/ · report/  (PBIP / TMDL source)
+infra/bicep-scripts/ main.bicep + dev/prod .bicepparam
+postman/             collection.json · environment.json
+src/app/
+  api/               main.py · routes/ (one router per endpoint group) · schemas/ (Pydantic)
+  agent/             LangChain Core: agent.py · schemas.py · prompts/ · tools/
+  core/              config · logging · security
+  services/          business logic shared by routes and agent tools
+src/data/            generate/ (seeded generator) · raw/ (source files for Bronze)
+tests/               unit/ · data_quality/ · integration/
+```
 
 ## Team (§8)
 

@@ -1,7 +1,7 @@
 # Tests
 
 **Spec:** §7 Testing and operations; supports §6.2, §6.3, §6.7, §6.8
-**Deliverable:** `docs/11-testing-operations.md`
+**Deliverable:** `docs/runbook.md`
 
 | Folder | Runs in CI | Marker | Owner |
 |---|---|---|---|

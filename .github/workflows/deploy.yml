@@ -1,0 +1,18 @@
+# Deploy (spec 6.8): manual, approval-gated through the GitHub environment's required reviewers.
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [dev, prod]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      # TODO: azure/login, push image, deploy infra/bicep-scripts/main.bicep with ${{ inputs.environment }}.bicepparam
+      - run: echo "Deploy to ${{ inputs.environment }} not implemented yet"

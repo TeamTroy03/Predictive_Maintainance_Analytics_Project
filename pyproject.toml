@@ -16,9 +16,15 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "httpx2>=2.13.1",
     "pytest>=9.1.1",
     "ruff>=0.16.9",
 ]
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+where = ["src"]
+include = ["app*", "data*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

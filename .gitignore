@@ -37,5 +37,4 @@ derby.log
 Thumbs.db
 
 #Github Workflows
-.github/workflows/*
 .github/CODEOWNERS

@@ -1,7 +1,7 @@
 # Microsoft Fabric and Power BI
 
 **Spec:** §6.4 Microsoft Fabric: Semantic Model and Report · **Owner:** @participant2
-**Deliverable:** Fabric and Power BI → `docs/06-fabric-powerbi.md`
+**Deliverable:** Fabric and Power BI → `docs/fabric_powerbi.md`
 
 **Acceptance condition (§6.4 / §7):** a governed semantic model over Gold with relationships,
 hierarchies, descriptions and a measures table; ≥ 8 explicit DAX measures (volume, rate/ratio,

@@ -1,7 +1,7 @@
 # Data-quality tests
 
 **Spec:** §6.2 (DQ expectations, quarantine), §6.3 (Silver → Gold reconciliation) · **Owners:** @participant1, @participant2
-**Evidence:** `docs/04-quality-evidence/`
+**Evidence:** `docs/quality_evidence.md`
 
 **Acceptance condition:** each Team 3 priority rule (out-of-range readings, unit inconsistency,
 missing equipment keys, overlapping downtime, closure before creation, duplicate sensor events)
