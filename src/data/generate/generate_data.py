@@ -1,25 +1,32 @@
 #!/usr/bin/env python3
 """Synthetic source-data generator for Team 3 - Predictive Maintenance Analytics.
 
-Generates the four extended source files described in ``data_dictionary.md``:
+Generates the four extended source files described in ``data_dictionary.md``. File names carry a
+run timestamp (``<dataset>_<YYYYmmdd_HHMMSS>.<ext>``, UTC) so repeated runs never collide:
 
-* ``equipment_2.csv``           asset master data, one row per asset version
-* ``work_orders_2.csv``         work orders, one row per work-order version
-* ``maintenance_history_2.csv`` maintenance activities, one row per activity version
-* ``sensor_events_2.json``      IoT readings, JSON array, one reading per event
+* ``equipment_<ts>.csv``           asset master data, one row per asset version
+* ``work_orders_<ts>.csv``         work orders, one row per work-order version
+* ``maintenance_history_<ts>.csv`` maintenance activities, one row per activity version
+* ``sensor_events_<ts>.json``      IoT readings, JSON array, one reading per event
+
+Layout: the four files go to ``src/data/raw/`` (or ``--out``). Everything else (defect manifest,
+generation summary, per-batch splits, reference and config tables) goes to
+``src/data/.log/<ts>/`` (or ``--log-dir``).
 
 Guarantees
 ----------
-* Every file has exactly ``ROWS_PER_FILE`` rows (10,000).
-* Exactly ``DEFECT_RATE`` (5 %) of the rows of every file carry ONE injected
-  defect from the priority data-quality rules (500 rows per file, split evenly
-  over five rules per file). Every injected defect is listed in
+* Every file has exactly ``--rows-per-file`` rows (default 10,000).
+* Exactly ``--defect-rate`` (default 5 %) of the rows of every file carry ONE
+  injected defect from the priority data-quality rules (500 rows per file at the
+  defaults, split evenly over five rules per file). Every injected defect is listed in
   ``defect_manifest.csv`` (file, row index, key, rule, detail) so Silver
   detection can be validated against ground truth.
 * Outside the manifest the data is clean: no accidental overlaps, orphans,
   inverted timestamps or duplicates. ``self_check`` re-derives the defect
   counts from the written files and fails loudly if they do not match.
-* Deterministic: the same seed always produces byte-identical files.
+* Deterministic: the same seed + rows + defect rate always produce byte-identical
+  files. ``--no-seed`` draws a fresh random seed (printed and stored in
+  ``generation_summary.json``) so every run yields a new data set.
 
 Physics (summary, see README notes printed at the end)
 ------------------------------------------------------
@@ -33,7 +40,9 @@ Physics (summary, see README notes printed at the end)
 
 Usage
 -----
-    python generate_pdm_data.py --out ./data --seed 20260915
+    python generate_data.py --out ./data                          # defaults, reproducible
+    python generate_data.py --out ./data --rows-per-file 20000 --defect-rate 0.03
+    python generate_data.py --out ./data --no-seed                # new random data each run
 
 Only the Python standard library is used.
 """
@@ -45,20 +54,34 @@ import csv
 import json
 import math
 import random
+import sys
 from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 UTC = timezone.utc
+DATA_DIR = Path(__file__).resolve().parent.parent     # src/data
+DEFAULT_OUT_DIR = DATA_DIR / "raw"                    # the four source files
+DEFAULT_LOG_DIR = DATA_DIR / ".log"                   # one <timestamp>/ sub-folder per run
 
 # =============================================================================
 # 1. Configuration
 # =============================================================================
 SEED = 20260915
-ROWS_PER_FILE = 10_000
-DEFECT_RATE = 0.05
-N_DEFECTS = round(ROWS_PER_FILE * DEFECT_RATE)  # 500 per file
+DEFAULT_ROWS_PER_FILE = 10_000
+DEFAULT_DEFECT_RATE = 0.05
+# Tested range (multi-seed sweeps: 0 failures inside it). Outside it some defect pools run dry, e.g. the
+# decommissioned assets needed for 'closure_before_creation' are only ~3.6 % of the rows.
+MIN_ROWS_PER_FILE = 1_000
+MAX_ROWS_PER_FILE = 100_000
+MAX_DEFECT_RATE = 0.10
+
+# Run-size settings. Do not edit: configure() derives them from --rows-per-file / --defect-rate
+# (it is called once at import with the defaults and again from main()).
+ROWS_PER_FILE = DEFAULT_ROWS_PER_FILE
+DEFECT_RATE = DEFAULT_DEFECT_RATE
+N_DEFECTS = 0               # defective rows per file
 
 SPAN_START = datetime(2026, 3, 15, tzinfo=UTC)  # first operational timestamp
 SPAN_END = datetime(2026, 9, 22, tzinfo=UTC)    # exclusive; end of batch-2 window
@@ -72,14 +95,20 @@ BATCHES = {
 UNKNOWN_EQUIPMENT_ID = "EQ-9999"  # never issued; asset IDs start at EQ-10001
 N_MONITORED_ASSETS = 20           # assets with IoT sensors (feed sensor_events)
 N_LEGACY_FIRMWARE_MONITORED = 5   # monitored assets behind gateways that send imperial units
-N_EQUIPMENT_VERSIONS = 150        # SCD type-2 changes (record_version 2)
-N_LEGACY_ACTIVITIES = 50          # maintenance rows from LEGACY_CMMS without work order
-N_MH_CORRECTIONS = 100            # corrected maintenance rows (record_version 2)
-N_WO_CLOSURE_FIXES = 30           # WO v2 rows that correct a closure-before-creation defect
-N_WO_PRIORITY_FIXES = 30          # WO v2 rows that correct a mis-keyed priority
-N_SENSOR_CORRECTIONS = 30         # sensor v2 events that correct an out-of-range spike
-N_LATE_EVENTS = 150               # sensor events delivered late (in batch 2)
-WO_CANDIDATES = 10_600            # generated before trimming to exactly 10,000 rows
+
+# Counts that scale with the run size. The SHARE_* constants reproduce the original
+# hard-coded numbers at the defaults (10,000 rows, 5 % defects):
+SHARE_EQUIPMENT_VERSIONS = 0.015  # of rows -> 150 SCD type-2 changes (record_version 2)
+SHARE_LEGACY_ACTIVITIES = 0.005   # of rows -> 50 maintenance rows from LEGACY_CMMS without work order
+SHARE_MH_CORRECTIONS = 0.010      # of rows -> 100 corrected maintenance rows (record_version 2)
+SHARE_WO_PRIORITY_FIXES = 0.003   # of rows -> 30 WO v2 rows that correct a mis-keyed priority
+SHARE_LATE_EVENTS = 0.015         # of rows -> 150 sensor events delivered late (in batch 2)
+SHARE_WO_CANDIDATES = 1.06        # of rows -> 10,600 WOs generated before trimming to ROWS_PER_FILE
+SHARE_WO_CLOSURE_FIXES = 0.30     # of closure defects -> 30 WO v2 rows that correct the defect
+SHARE_SENSOR_CORRECTIONS = 0.30   # of out-of-range readings -> 30 sensor v2 corrections
+SHARE_MH_LEGACY_NULL_KEYS = 0.10  # of missing-key defects -> 10 legacy rows with a null equipment_id
+N_EQUIPMENT_VERSIONS = N_LEGACY_ACTIVITIES = N_MH_CORRECTIONS = 0
+N_WO_CLOSURE_FIXES = N_WO_PRIORITY_FIXES = N_SENSOR_CORRECTIONS = N_LATE_EVENTS = WO_CANDIDATES = 0
 
 LABOR_RATE_EUR = 55.0
 SLA_HOURS = {"P1": 24, "P2": 72, "P3": 168, "P4": 336}
@@ -357,6 +386,39 @@ def split_evenly(total: int, keys: Iterable) -> dict:
     return {k: base + (1 if i < rem else 0) for i, k in enumerate(keys)}
 
 
+def configure(rows_per_file: int, defect_rate: float) -> None:
+    """Set the run size and derive every dependent count (module globals).
+
+    Args:
+        rows_per_file: rows in each of the four source files (all files get the same count).
+        defect_rate: fraction (0-1, e.g. 0.05 = 5 %) of rows per file that carry one injected defect.
+
+    Raises:
+        ValueError: if a value is outside the range the generator is tested for.
+    """
+    global ROWS_PER_FILE, DEFECT_RATE, N_DEFECTS, N_EQUIPMENT_VERSIONS, N_LEGACY_ACTIVITIES
+    global N_MH_CORRECTIONS, N_WO_CLOSURE_FIXES, N_WO_PRIORITY_FIXES, N_SENSOR_CORRECTIONS
+    global N_LATE_EVENTS, WO_CANDIDATES
+    if not MIN_ROWS_PER_FILE <= rows_per_file <= MAX_ROWS_PER_FILE:
+        raise ValueError(f"rows-per-file must be between {MIN_ROWS_PER_FILE:,} and {MAX_ROWS_PER_FILE:,}, "
+                         f"got {rows_per_file:,}")
+    if not 0.0 <= defect_rate <= MAX_DEFECT_RATE:
+        raise ValueError(f"defect-rate must be a fraction between 0 and {MAX_DEFECT_RATE} "
+                         f"(0.05 means 5 %), got {defect_rate}")
+    ROWS_PER_FILE, DEFECT_RATE = rows_per_file, defect_rate
+    N_DEFECTS = round(rows_per_file * defect_rate)
+    N_EQUIPMENT_VERSIONS = round(rows_per_file * SHARE_EQUIPMENT_VERSIONS)
+    N_LEGACY_ACTIVITIES = round(rows_per_file * SHARE_LEGACY_ACTIVITIES)
+    N_MH_CORRECTIONS = round(rows_per_file * SHARE_MH_CORRECTIONS)
+    N_WO_PRIORITY_FIXES = round(rows_per_file * SHARE_WO_PRIORITY_FIXES)
+    N_LATE_EVENTS = round(rows_per_file * SHARE_LATE_EVENTS)
+    WO_CANDIDATES = round(rows_per_file * SHARE_WO_CANDIDATES)
+    N_WO_CLOSURE_FIXES = round(SHARE_WO_CLOSURE_FIXES *
+                               split_evenly(N_DEFECTS, WORK_ORDER_RULES)["closure_before_creation"])
+    N_SENSOR_CORRECTIONS = round(SHARE_SENSOR_CORRECTIONS *
+                                 split_evenly(N_DEFECTS, SENSOR_RULES)["out_of_range_reading"])
+
+
 def weighted_choice(rng: random.Random, weights: dict) -> Any:
     keys = list(weights)
     return rng.choices(keys, [weights[k] for k in keys])[0]
@@ -397,6 +459,9 @@ def set_audit(row: dict, batch: int, system: str, file_prefix: str, ext: str, ke
     row["batch_id"] = b["batch_id"]
     row["source_system"] = system
     row["source_system_key"] = f"{system}|{key or ''}"
+
+
+configure(DEFAULT_ROWS_PER_FILE, DEFAULT_DEFECT_RATE)
 
 
 # =============================================================================
@@ -1477,7 +1542,8 @@ def build_maintenance_rows(rng: random.Random, acts: list[dict], plan: dict) -> 
     remaining = plan["missing_equipment_key"] - len(inherited)
     if remaining < 0:
         raise RuntimeError("too many inherited unknown keys")
-    n_legacy = min(10, remaining)
+    n_legacy = min(round(SHARE_MH_LEGACY_NULL_KEYS * plan["missing_equipment_key"]), remaining,
+                   N_LEGACY_ACTIVITIES)
     legacy = [r for r in rows if r["__legacy"]]
     normal = [r for r in rows if not r["__legacy"] and not (r["__wo"] and r["__wo"]["defect"]
                                                             and r["__wo"]["defect"][0] == "missing_equipment_key")]
@@ -1649,7 +1715,8 @@ def write_reference_files(out: Path) -> None:
 # =============================================================================
 # 11. Self-check (re-derives defects from the written files)
 # =============================================================================
-def self_check(out: Path, manifest: list[dict]) -> list[str]:
+def self_check(out: Path, manifest: list[dict], names: tuple[str, str, str, str]) -> list[str]:
+    EQ, WO, MH, SE = names
     msgs, ok = [], True
     m_counts = Counter((m["file"], m["rule"]) for m in manifest)
 
@@ -1660,10 +1727,10 @@ def self_check(out: Path, manifest: list[dict]) -> list[str]:
     def ts(s: str) -> datetime | None:
         return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC) if s else None
 
-    eq, wo, mh = read("equipment_2.csv"), read("work_orders_2.csv"), read("maintenance_history_2.csv")
-    se = json.loads((out / "sensor_events_2.json").read_text(encoding="utf-8"))
-    for name, rows in [("equipment_2.csv", eq), ("work_orders_2.csv", wo), ("maintenance_history_2.csv", mh),
-                       ("sensor_events_2.json", se)]:
+    eq, wo, mh = read(EQ), read(WO), read(MH)
+    se = json.loads((out / SE).read_text(encoding="utf-8"))
+    for name, rows in [(EQ, eq), (WO, wo), (MH, mh),
+                       (SE, se)]:
         n_def = sum(v for (f, _), v in m_counts.items() if f == name)
         good = len(rows) == ROWS_PER_FILE and n_def == N_DEFECTS
         ok &= good
@@ -1688,46 +1755,46 @@ def self_check(out: Path, manifest: list[dict]) -> list[str]:
             if end is not None and s < end:
                 overlaps += 1
             end = e if end is None else max(end, e)
-    checks.append(("work_orders overlapping downtime", overlaps, m_counts[("work_orders_2.csv", "overlapping_downtime")]))
+    checks.append(("work_orders overlapping downtime", overlaps, m_counts[(WO, "overlapping_downtime")]))
     checks.append(("work_orders closed_ts < created_ts",
                    sum(1 for r in wo if r["closed_ts"] and ts(r["closed_ts"]) < ts(r["created_ts"])),
-                   m_counts[("work_orders_2.csv", "closure_before_creation")]))
+                   m_counts[(WO, "closure_before_creation")]))
     checks.append(("work_orders missing/unknown equipment_id",
                    sum(1 for r in wo if r["equipment_id"] in ("", UNKNOWN_EQUIPMENT_ID)),
-                   m_counts[("work_orders_2.csv", "missing_equipment_key")]))
+                   m_counts[(WO, "missing_equipment_key")]))
     keys = Counter(tuple(r.values()) for r in wo)
     checks.append(("work_orders exact duplicate rows", sum(c - 1 for c in keys.values()),
-                   m_counts[("work_orders_2.csv", "duplicate_record")]))
+                   m_counts[(WO, "duplicate_record")]))
     checks.append(("maintenance end < start",
                    sum(1 for r in mh if ts(r["activity_end_ts"]) < ts(r["activity_start_ts"])),
-                   m_counts[("maintenance_history_2.csv", "closure_before_creation")]))
+                   m_counts[(MH, "closure_before_creation")]))
     checks.append(("maintenance missing/unknown equipment_id",
                    sum(1 for r in mh if r["equipment_id"] in ("", UNKNOWN_EQUIPMENT_ID)),
-                   m_counts[("maintenance_history_2.csv", "missing_equipment_key")]))
+                   m_counts[(MH, "missing_equipment_key")]))
     checks.append(("equipment null equipment_id", sum(1 for r in eq if not r["equipment_id"]),
-                   m_counts[("equipment_2.csv", "missing_equipment_key")]))
+                   m_counts[(EQ, "missing_equipment_key")]))
     checks.append(("equipment decommission < install",
                    sum(1 for r in eq if r["decommission_date"] and r["decommission_date"] < r["install_date"]),
-                   m_counts[("equipment_2.csv", "closure_before_creation")]))
+                   m_counts[(EQ, "closure_before_creation")]))
     raw = Counter(json.dumps(e, sort_keys=True) for e in se)
     checks.append(("sensor exact duplicates", sum(c - 1 for c in raw.values()),
-                   m_counts[("sensor_events_2.json", "duplicate_sensor_event_exact")]))
+                   m_counts[(SE, "duplicate_sensor_event_exact")]))
     near = defaultdict(set)
     for e in se:
         near[(e["equipment_id"], e["sensor"]["sensor_id"], e["event_ts"])].add(e["event_id"])
     checks.append(("sensor near duplicates (new event_id)", sum(len(v) - 1 for v in near.values()),
-                   m_counts[("sensor_events_2.json", "duplicate_sensor_event_near")]))
+                   m_counts[(SE, "duplicate_sensor_event_near")]))
     checks.append(("sensor non-canonical units",
                    sum(1 for e in se if e["reading"]["unit"] != e["sensor"]["canonical_unit"]),
-                   m_counts[("sensor_events_2.json", "unit_inconsistency")]))
+                   m_counts[(SE, "unit_inconsistency")]))
     checks.append(("sensor missing/unknown equipment_id",
                    sum(1 for e in se if e["equipment_id"] in (None, UNKNOWN_EQUIPMENT_ID)),
-                   m_counts[("sensor_events_2.json", "missing_equipment_key")]))
+                   m_counts[(SE, "missing_equipment_key")]))
     oor_v1 = sum(1 for e in se if e["record_version"] == 1
                  and e["reading"]["unit"] == e["sensor"]["canonical_unit"] and not
                  (e["sensor"]["range_min"] <= e["reading"]["value"] <= e["sensor"]["range_max"]))
     checks.append(("sensor out-of-range (v1 rows)", oor_v1,
-                   m_counts[("sensor_events_2.json", "out_of_range_reading")]))
+                   m_counts[(SE, "out_of_range_reading")]))
     msgs.append("")
     for name, found, expected in checks:
         good = found == expected
@@ -1741,7 +1808,16 @@ def self_check(out: Path, manifest: list[dict]) -> list[str]:
 # =============================================================================
 # 12. Orchestration
 # =============================================================================
-def generate(out: Path, seed: int) -> None:
+def source_file_names(stamp: str) -> tuple[str, str, str, str]:
+    """Timestamped names of the four source files, e.g. ``equipment_20261003_101500.csv``."""
+    return (f"equipment_{stamp}.csv", f"work_orders_{stamp}.csv",
+            f"maintenance_history_{stamp}.csv", f"sensor_events_{stamp}.json")
+
+
+def generate(out: Path, log_dir: Path, seed: int, stamp: str) -> None:
+    """Write the four source files to ``out`` and everything else (manifest, summary, batches,
+    reference, config) to ``log_dir``."""
+    EQ, WO, MH, SE = names = source_file_names(stamp)
     rng = random.Random(seed)
     eq_plan = split_evenly(N_DEFECTS, EQUIPMENT_RULES)
     wo_plan = split_evenly(N_DEFECTS, WORK_ORDER_RULES)
@@ -1862,35 +1938,37 @@ def generate(out: Path, seed: int) -> None:
 
     # --- write ------------------------------------------------------------------
     out.mkdir(parents=True, exist_ok=True)
-    files = [("equipment_2.csv", EQUIPMENT_COLUMNS, eq_rows), ("work_orders_2.csv", WORK_ORDER_COLUMNS, wo_rows),
-             ("maintenance_history_2.csv", MAINTENANCE_COLUMNS, mh_rows)]
+    log_dir.mkdir(parents=True, exist_ok=True)
+    files = [(EQ, EQUIPMENT_COLUMNS, eq_rows), (WO, WORK_ORDER_COLUMNS, wo_rows),
+             (MH, MAINTENANCE_COLUMNS, mh_rows)]
     manifest = []
     for name, cols, rows in files:
         write_csv(out / name, cols, rows)
         key = cols[0]
         manifest += manifest_rows(name, rows, key, lambda r: r["batch_id"])
         for b in (1, 2):
-            write_csv(out / "batches" / f"batch_0{b}" / name, cols,
+            write_csv(log_dir / "batches" / f"batch_0{b}" / name, cols,
                       [r for r in rows if r["batch_id"] == BATCHES[b]["batch_id"]])
-    write_json_array(out / "sensor_events_2.json", se_rows)
-    manifest += manifest_rows("sensor_events_2.json", se_rows, "event_id", lambda e: e["_metadata"]["batch_id"])
+    write_json_array(out / SE, se_rows)
+    manifest += manifest_rows(SE, se_rows, "event_id", lambda e: e["_metadata"]["batch_id"])
     for b in (1, 2):
-        write_json_array(out / "batches" / f"batch_0{b}" / "sensor_events_2.json",
+        write_json_array(log_dir / "batches" / f"batch_0{b}" / SE,
                          [e for e in se_rows if e["_metadata"]["batch_id"] == BATCHES[b]["batch_id"]])
-    write_csv(out / "defect_manifest.csv", ["file", "row_index", "batch_id", "record_key", "record_version", "rule",
-                                            "defect_detail", "expected_silver_handling"], manifest)
-    write_reference_files(out)
+    write_csv(log_dir / "defect_manifest.csv", ["file", "row_index", "batch_id", "record_key", "record_version",
+                                                "rule", "defect_detail", "expected_silver_handling"], manifest)
+    write_reference_files(log_dir)
 
     # --- summary ----------------------------------------------------------------
-    report = self_check(out, manifest)
+    report = self_check(out, manifest, names)
     final_states = Counter(wo_state(w, SPAN_END)["status"] for w in wos)
     summary = {
+        "run_timestamp": stamp, "files": list(names), "output_dir": str(out.resolve()),
         "seed": seed, "span_start": iso(SPAN_START), "span_end_exclusive": iso(SPAN_END), "batch_cutoff": iso(CUTOFF),
         "rows_per_file": ROWS_PER_FILE, "defect_rate": DEFECT_RATE,
-        "defect_plan": {"equipment_2.csv": eq_plan, "work_orders_2.csv": wo_plan,
-                        "maintenance_history_2.csv": mh_plan, "sensor_events_2.json": se_plan},
+        "defect_plan": {EQ: eq_plan, WO: wo_plan,
+                        MH: mh_plan, SE: se_plan},
         "batch_rows": {name: Counter(r["batch_id"] for r in rows) for name, _, rows in files} |
-                      {"sensor_events_2.json": Counter(e["_metadata"]["batch_id"] for e in se_rows)},
+                      {SE: Counter(e["_metadata"]["batch_id"] for e in se_rows)},
         "assets": len(assets), "iot_monitored_assets": sorted(a["equipment_id"] for a in monitored),
         "work_orders_unique": len(wos), "work_order_status": dict(final_states),
         "work_orders_by_type": dict(Counter(w["wo_type"] for w in wos)),
@@ -1899,19 +1977,61 @@ def generate(out: Path, seed: int) -> None:
         "late_sensor_events": N_LATE_EVENTS, "sensor_corrections": N_SENSOR_CORRECTIONS,
         "sensor_alarm_states": dict(Counter(e["alarm"]["state"] for e in se_rows)),
     }
-    (out / "generation_summary.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+    (log_dir / "generation_summary.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     print("\n".join(report))
     print(f"\nWork orders: {dict(final_states)} | repeats={summary['repeat_failures']} "
           f"| predictive with trigger={summary['predictive_with_trigger']}")
-    print(f"Output written to {out.resolve()}")
+    print(f"Source files written to {out.resolve()}")
+    print(f"Manifest, summary, batches, reference and config written to {log_dir.resolve()}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--out", type=Path, default=Path("data"), help="output directory")
-    parser.add_argument("--seed", type=int, default=SEED, help="random seed (reproducible output)")
+    parser.add_argument("--out", type=Path, default=DEFAULT_OUT_DIR,
+                        help="directory for the four source files, named <dataset>_<timestamp>.<ext> "
+                             "(default: src/data/raw)")
+    parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR,
+                        help="parent of the per-run log folder <log-dir>/<timestamp>/ that receives the defect "
+                             "manifest, generation summary, batches, reference and config (default: src/data/.log)")
+    parser.add_argument("--rows-per-file", type=int, default=DEFAULT_ROWS_PER_FILE, metavar="N",
+                        help=f"rows in EACH of the four source files, {MIN_ROWS_PER_FILE:,}-{MAX_ROWS_PER_FILE:,} "
+                             f"(default: {DEFAULT_ROWS_PER_FILE:,})")
+    parser.add_argument("--defect-rate", type=float, default=DEFAULT_DEFECT_RATE, metavar="FRACTION",
+                        help=f"share of rows per file that carry one injected defect, 0-{MAX_DEFECT_RATE} "
+                             f"as a fraction: 0.05 = 5 %% (default: {DEFAULT_DEFECT_RATE})")
+    seed_group = parser.add_mutually_exclusive_group()
+    seed_group.add_argument("--seed", type=int, default=SEED,
+                            help=f"random seed, same seed = identical files (default: {SEED})")
+    seed_group.add_argument("--no-seed", action="store_true",
+                            help="do not use a fixed seed: draw a fresh random one so every run produces "
+                                 "new data. The seed used is printed and saved in generation_summary.json")
     args = parser.parse_args()
-    generate(args.out, args.seed)
+    try:
+        configure(args.rows_per_file, args.defect_rate)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    # Fixed seed: one attempt. Random seed: a rare seed can leave a sampling pool too small for a
+    # defect rule, so retry with a new seed instead of failing the whole run.
+    attempts = 5 if args.no_seed else 1
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")  # one stamp per run: names the files and the log folder
+    log_dir = args.log_dir / stamp
+    for attempt in range(1, attempts + 1):
+        seed = random.SystemRandom().randrange(2 ** 32) if args.no_seed else args.seed
+        mode = "random (--no-seed)" if args.no_seed else "fixed"
+        print(f"Generating {ROWS_PER_FILE:,} rows per file, defect rate {DEFECT_RATE:.1%} "
+              f"({N_DEFECTS:,} defective rows per file), seed {seed} [{mode}]")
+        try:
+            generate(args.out, log_dir, seed, stamp)
+        except RuntimeError as exc:
+            print(f"  seed {seed} failed: {exc}", file=sys.stderr)
+            if attempt == attempts:
+                sys.exit("Generation failed. Try a lower --defect-rate or a larger --rows-per-file.")
+            continue
+        if args.no_seed:
+            print(f"Seed used: {seed} (re-run with --seed {seed} --rows-per-file {ROWS_PER_FILE} "
+                  f"--defect-rate {DEFECT_RATE} to reproduce this exact data set)")
+        return
 
 
 if __name__ == "__main__":

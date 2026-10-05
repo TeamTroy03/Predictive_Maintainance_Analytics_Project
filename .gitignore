@@ -39,3 +39,9 @@ Thumbs.db
 #Github Workflows
 .github/CODEOWNERS
 data/*
+
+#Log files
+*.log*
+
+#In Development
+src/data/upload/*
