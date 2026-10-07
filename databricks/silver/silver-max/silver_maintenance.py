@@ -218,7 +218,9 @@ def clean_maintenance_history(bronze_df: DataFrame, config: dict = CONFIG) -> Da
         ]
 
         for c, fmt, fn in casts:
-            fmt = fmt.replace("'", "\\'")  # pattern's 'T'/'Z' quotes break the SQL literal
+            fmt = fmt.replace(
+                "'", "\\'"
+            )  # pattern's 'T'/'Z' quotes break the SQL literal
             expr_str = (
                 f"{fn}({c}, '{fmt}')" if fn != "try_cast" else f"{fn}({c} AS {fmt})"
             )
@@ -610,12 +612,14 @@ def create_silver_tables(
             spark.sql(f"ALTER TABLE {quar_table} ADD COLUMNS (resolved_ts TIMESTAMP)")
         DeltaTable.forName(spark, quar_table).alias("t").merge(
             full_quar_df.alias("s"),
-            "t.entity = s.entity AND t.record_id = s.record_id AND t.rule_id = s.rule_id",
+            "t.entity = s.entity AND t.record_id = s.record_id AND t.rule_id = s.rule_id"
+            " AND t.field_name <=> s.field_name",
         ).whenMatchedUpdate(
             set={
                 "last_seen_ts": "s.last_seen_ts",
                 "last_run_id": "s.last_run_id",
                 "resolution_status": "'OPEN'",
+                "resolved_ts": "NULL",
             }
         ).whenNotMatchedInsertAll().whenNotMatchedBySourceUpdate(
             condition="t.entity = 'maintenance_history' AND t.resolution_status = 'OPEN'",

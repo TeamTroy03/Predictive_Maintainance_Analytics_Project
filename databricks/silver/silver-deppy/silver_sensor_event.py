@@ -6,7 +6,8 @@ clean_bronze_table(), convert_to_silver_table(), main(), UTC, uppercase equipmen
 Sensor business key: (source_system, event_id), preserving event/source ID case.
 Exact duplicates are compared within a source, excluding ingestion lineage.
 All Bronze rows are counted; rescued/non-SUCCESS rows are filtered from Silver.
-Missing equipment stays NULL / MISSING in retained rows; no quarantine is written.
+Missing equipment stays NULL / MISSING in retained rows. Rejected rows get one ROW record
+per failed rule in the shared silver_dq_quarantine (same schema as silver_maintenance.py).
 Unregistered equipment is retained with dq_unknown_equipment=True.
 TYPE_CAST flags identify nonempty values that failed conversion; required sensor
 fields are rejected by their DQ rules, optional fields remain NULL with evidence.
@@ -135,10 +136,22 @@ def fired(pairs):
                     lambda value: value.isNotNull())
 
 
+# Shared silver_dq_quarantine schema: identical in silver_maintenance.py and silver-stau.py
+# (spec: context/silver_max/silver_maintenance_rules.md 6.3). Change all three together.
+QUARANTINE_DDL = """CREATE TABLE IF NOT EXISTS {table} (
+    entity STRING, record_id STRING, rule_id STRING, quarantine_type STRING, field_name STRING,
+    reason STRING, original_values STRING, record_version INT, _batch_id STRING,
+    _source_file STRING, quarantine_ts TIMESTAMP, last_seen_ts TIMESTAMP, last_run_id STRING,
+    resolution_status STRING, resolved_ts TIMESTAMP
+) USING DELTA"""
+QUARANTINE_ENTITY = "sensor_events"
+
+
 @dataclass
 class CleaningResult:
     silver: DataFrame
     superseded: DataFrame
+    quarantine: DataFrame
     audit: DataFrame
     counts: dict
     run_id: str
@@ -467,7 +480,24 @@ def clean_bronze_table(bronze: DataFrame, equipment: DataFrame) -> CleaningResul
         .withColumn("silver_run_id", F.lit(RUN_ID))
     )
 
-    # Match the supplied modules: filter invalid rows without writing quarantine.
+    # One ROW record per rejected row and failed rule: "DQ10: Reading outside..." -> rule + reason.
+    failure = F.split(F.col("failure"), ": ", 2)
+    now = F.current_timestamp()
+    df_quarantine = (df_evaluated.filter(~F.col("is_valid"))
+        .select(F.explode("dq_errors").alias("failure"), "event_id", "record_hash",
+                "record_version", "bronze_batch_id", "source_filename", "raw_record_json")
+        .select(
+            F.lit(QUARANTINE_ENTITY).alias("entity"),
+            F.coalesce("event_id", "record_hash").alias("record_id"),
+            failure[0].alias("rule_id"), F.lit("ROW").alias("quarantine_type"),
+            F.lit(None).cast("string").alias("field_name"), failure[1].alias("reason"),
+            F.col("raw_record_json").alias("original_values"), "record_version",
+            F.col("bronze_batch_id").alias("_batch_id"),
+            F.col("source_filename").alias("_source_file"),
+            now.alias("quarantine_ts"), now.alias("last_seen_ts"),
+            F.lit(RUN_ID).alias("last_run_id"), F.lit("OPEN").alias("resolution_status"),
+            F.lit(None).cast("timestamp").alias("resolved_ts")))
+
     valid_count = df_valid.count()
     rejected_count = df_evaluated.filter(~F.col("is_valid")).count()
     missing_equipment_count = df_valid.filter(F.col("equipment_id").isNull()).count()
@@ -513,7 +543,7 @@ def clean_bronze_table(bronze: DataFrame, equipment: DataFrame) -> CleaningResul
             F.round(F.col("records_failed") / F.col("records_evaluated"), 4)))
         .withColumn("run_ts", F.current_timestamp()).withColumn("run_id", F.lit(RUN_ID)))
     return CleaningResult(
-        silver=df_valid, superseded=df_superseded,
+        silver=df_valid, superseded=df_superseded, quarantine=df_quarantine,
         audit=dq_df, run_id=RUN_ID,
         counts={"input": input_count, "silver": valid_count,
                 "rejected": rejected_count,
@@ -542,6 +572,24 @@ def _with_silver_metadata(df: DataFrame, run_id: str) -> DataFrame:
             .drop("silver_run_id", "silver_processed_ts"))
 
 
+def merge_quarantine(spark, quarantine: DataFrame, target: str) -> None:
+    """MERGE, never append: reruns refresh last_seen_ts, records that stop firing turn RESOLVED."""
+    spark.sql(QUARANTINE_DDL.format(table=target))
+    # Rows without event_id share record_hash when Bronze holds identical copies.
+    quarantine.dropDuplicates(["record_id", "rule_id"]).createOrReplaceTempView(
+        "_quarantine_updates")
+    spark.sql(f"""
+        MERGE INTO {target} t USING _quarantine_updates s
+        ON t.entity = s.entity AND t.record_id = s.record_id
+           AND t.rule_id = s.rule_id AND t.field_name <=> s.field_name
+        WHEN MATCHED THEN UPDATE SET last_seen_ts = s.last_seen_ts, last_run_id = s.last_run_id,
+             resolution_status = 'OPEN', resolved_ts = NULL
+        WHEN NOT MATCHED THEN INSERT *
+        WHEN NOT MATCHED BY SOURCE AND t.entity = '{QUARANTINE_ENTITY}'
+             AND t.resolution_status = 'OPEN'
+             THEN UPDATE SET resolution_status = 'RESOLVED', resolved_ts = current_timestamp()""")
+
+
 def convert_to_silver_table(cleaned: CleaningResult, base: str = CFG.base) -> None:
     """Validate row reconciliation, write entity outputs, append shared audit."""
     spark = cleaned.silver.sparkSession
@@ -565,7 +613,6 @@ def convert_to_silver_table(cleaned: CleaningResult, base: str = CFG.base) -> No
             raise ValueError(f"Incompatible dq_results column types: {incompatible}")
 
     # Full refresh; each Delta write is atomic, not the group of writes.
-    # Existing quarantine tables from earlier scripts are not updated or deleted.
     for name, frame, expected in [
         ("silver_sensor_events", cleaned.silver, counts["silver"]),
         ("superseded_sensor_events", cleaned.superseded, counts["superseded"]),
@@ -579,10 +626,11 @@ def convert_to_silver_table(cleaned: CleaningResult, base: str = CFG.base) -> No
             "overwriteSchema", "true").saveAsTable(table)
         assert spark.table(table).count() == expected, f"Saved row count mismatch: {table}"
         print(f"{table}: {expected} records saved")
+    merge_quarantine(spark, cleaned.quarantine, f"{base}.silver_dq_quarantine")
     cleaned.audit.write.format("delta").mode("append").option(
         "mergeSchema", "true").saveAsTable(audit_table)
     print(f"Run {cleaned.run_id}: {counts}")
-    print("Missing-equipment rows are included in Silver; invalid rows are filtered without quarantine.")
+    print("Missing-equipment rows are included in Silver; invalid rows are in silver_dq_quarantine.")
 
 
 # ---------------------------------------------------------------- 4. Main Execution
