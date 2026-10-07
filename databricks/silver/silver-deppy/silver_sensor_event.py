@@ -1,6 +1,6 @@
 """
 
-Run after silver_equipment, over stable Bronze input. Full refresh outputs.
+Run over stable bronze_sensor_events input ingested from JSON. Full refresh outputs.
 Shared conventions: Config, SOURCE_COLS/LINEAGE/CASTS, _f_* flags,
 clean_bronze_table(), convert_to_silver_table(), main(), UTC, uppercase equipment IDs.
 Sensor business key: (source_system, event_id), preserving event/source ID case.
@@ -8,7 +8,7 @@ Exact duplicates are compared within a source, excluding ingestion lineage.
 All Bronze rows are counted; rescued/non-SUCCESS rows are filtered from Silver.
 Missing equipment stays NULL / MISSING in retained rows. Rejected rows get one ROW record
 per failed rule in the shared silver_dq_quarantine (same schema as silver_maintenance.py).
-Unregistered equipment is retained with dq_unknown_equipment=True.
+Equipment registration is not checked; equipment_id comes only from Bronze.
 TYPE_CAST flags identify nonempty values that failed conversion; required sensor
 fields are rejected by their DQ rules, optional fields remain NULL with evidence.
 No timestamp repair is invented: a sensor event has no maintenance duration.
@@ -285,11 +285,10 @@ def _deduplicate(df: DataFrame) -> DataFrame:
             .drop("_business_json", "_dedup_eligible"))
 
 
-def clean_bronze_table(bronze: DataFrame, equipment: DataFrame) -> CleaningResult:
+def clean_bronze_table(bronze: DataFrame) -> CleaningResult:
     """Standardize, deduplicate, validate and route; do not write tables."""
     bronze.sparkSession.conf.set("spark.sql.session.timeZone", "UTC")
     RUN_ID = f"se-{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:6]}"
-    _check_schema(equipment, ["equipment_id"], "silver_equipment")
     if bronze.limit(1).count() == 0:
         raise ValueError("Empty Bronze: stopped before replacing Silver outputs")
     raw = _deduplicate(_read_and_standardise(bronze))
@@ -335,43 +334,20 @@ def clean_bronze_table(bronze: DataFrame, equipment: DataFrame) -> CleaningResul
         .otherwise(F.lit(None).cast("double"))
     )
 
-    # Read only the equipment IDs. No changes to silver_equipment.
-    equipment_keys = (
-        equipment
-        .select(F.upper(F.trim(F.col("equipment_id"))).alias("equipment_id"))
-        .filter(
-            F.col("equipment_id").isNotNull() &
-            (F.col("equipment_id") != "")
-        )
-        .distinct()
-        .withColumn("equipment_exists", F.lit(True))
-    )
-
-    # Keep every sensor event, including unmatched equipment IDs.
-    df_checked = (
+    # Use only equipment_id from the JSON already ingested into Bronze.
+    # SOURCE means provided by the source, not verified against a master table.
+    df_deduped = (
         df_normalized
-        .join(equipment_keys, on="equipment_id", how="left")
         .withColumn(
-            "equipment_exists",
-            F.coalesce(F.col("equipment_exists"), F.lit(False))
+            "equipment_resolution",
+            F.when(F.col("equipment_id").isNull(), F.lit("MISSING"))
+             .otherwise(F.lit("SOURCE"))
+        )
+        .withColumn(
+            FLAG("EQ_MISSING"),
+            F.col("equipment_id").isNull()
         )
     )
-
-    # Shared equipment flags; equipment ID case is normalized to uppercase.
-    # No work-order-based ID recovery is available in the sensor pipeline.
-    df_checked = (df_checked
-        .withColumn("dq_unknown_equipment",
-                    F.col("equipment_id").isNotNull() & ~F.col("equipment_exists"))
-        .withColumn("equipment_resolution",
-                    F.when(F.col("equipment_id").isNull(), F.lit("MISSING"))
-                     .when(F.col("dq_unknown_equipment"), F.lit("UNREGISTERED"))
-                     .otherwise(F.lit("SOURCE"))))
-    df_checked = (df_checked
-        .withColumn(FLAG("EQ_MISSING"), F.col("equipment_id").isNull())
-        .withColumn(FLAG("EQ_UNREGISTERED"), F.col("dq_unknown_equipment")))
-    # Missing IDs are retained; other sensor DQ errors filter out the row.
-
-    df_deduped = df_checked
     def missing_text(column_name):
         return (
             F.col(column_name).isNull() |
@@ -398,7 +374,7 @@ def clean_bronze_table(bronze: DataFrame, equipment: DataFrame) -> CleaningResul
             missing_text("source_system")
         ),
         # DQ03 retired: missing equipment is EQ_MISSING (FLAG only).
-        # DQ04 retired: unknown equipment is now EQ_UNREGISTERED (FLAG), not an error.
+        # DQ04 not evaluated: no equipment reference lookup.
         (
             "DQ05: Missing sensor_id",
             missing_text("sensor_id")
@@ -515,14 +491,10 @@ def clean_bronze_table(bronze: DataFrame, equipment: DataFrame) -> CleaningResul
     audit_rows = [("silver_sensor_events", reason.split(":", 1)[0],
                    dimensions[reason.split(":", 1)[0]], "ERROR", reason,
                    deduped_count, failed.get(reason, 0)) for reason, _ in rules]
-    unknown_count = df_evaluated.filter(F.col("dq_unknown_equipment")).count()
     audit_rows += [
         ("silver_sensor_events", "EQ_MISSING", "completeness", "FLAG",
          "Missing equipment_id; retain with MISSING unless another rule rejects the event",
          deduped_count, df_evaluated.filter(F.col("equipment_id").isNull()).count()),
-        ("silver_sensor_events", "EQ_UNREGISTERED", "referential_integrity", "FLAG",
-         "Equipment absent from Silver master; retain unless another rule rejects the event",
-         deduped_count, unknown_count),
         ("silver_sensor_events", "DUP_EXACT", "uniqueness", "INFO",
          "Exact business duplicates set aside", input_count, raw.filter(F.col(FLAG("DUP_EXACT"))).count()),
     ]
@@ -562,7 +534,7 @@ def _with_silver_metadata(df: DataFrame, run_id: str) -> DataFrame:
     for source, target in aliases.items():
         df = df.withColumn(target, F.col(source))
     hash_cols = BUSINESS + ["source_system", "reading_value_canonical",
-                            "equipment_resolution", "dq_unknown_equipment"]
+                            "equipment_resolution"]
     # JSON avoids separator/null-token collisions in concat-based row hashes.
     return (df.withColumn("_silver_row_hash", F.sha2(F.to_json(
                 F.struct(*[F.col(c) for c in hash_cols]),
@@ -598,10 +570,10 @@ def convert_to_silver_table(cleaned: CleaningResult, base: str = CFG.base) -> No
                                 + counts["superseded"]), "Row reconciliation failed"
     assert cleaned.silver.groupBy("source_system", "event_id").count().filter(
         F.col("count") > 1).limit(1).count() == 0, "Duplicate Silver event keys"
-    assert cleaned.silver.filter(F.col("equipment_id").isNull() & (
-        ~F.col("equipment_resolution").eqNullSafe("MISSING") |
-        ~F.col("dq_unknown_equipment").eqNullSafe(False)
-    )).limit(1).count() == 0, "Inconsistent missing-equipment flags"
+    assert cleaned.silver.filter(
+        F.col("equipment_id").isNull()
+        & ~F.col("equipment_resolution").eqNullSafe("MISSING")
+    ).limit(1).count() == 0, "Inconsistent missing-equipment flags"
     assert cleaned.silver.filter(F.col("equipment_id").isNull()).count() == counts["missing_equipment_retained"]
 
     audit_table = f"{base}.dq_results"
@@ -642,8 +614,8 @@ def main():
     if spark is None:
         raise RuntimeError("Run this script in Databricks with an active Spark session")
     cleaned = clean_bronze_table(
-        bronze=spark.table(f"{CFG.base}.bronze_sensor_events"),
-        equipment=spark.table(f"{CFG.base}.silver_equipment"))
+        bronze=spark.table(f"{CFG.base}.bronze_sensor_events")
+    )
     convert_to_silver_table(cleaned)
 
 
