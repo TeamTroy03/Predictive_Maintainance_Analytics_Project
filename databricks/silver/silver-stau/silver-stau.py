@@ -48,8 +48,8 @@ NON_EUR_COST_TOLERANCE_PCT = 1.5  # GBP/USD rows: the fixed rate is approximate
 FX_RATE_SOURCE = "FIXED_RATE"  # OPEN: confirm official rates with the instructor
 FX_RATES_TO_EUR = {
     "EUR": Decimal("1.0000"),
-    "GBP": Decimal("1.1700"),
-    "USD": Decimal("0.9120"),
+    "GBP": Decimal("1.169"),
+    "USD": Decimal("0.903"),
 }
 
 SLA_HOURS = {"P1": 24, "P2": 72, "P3": 168, "P4": 336}
