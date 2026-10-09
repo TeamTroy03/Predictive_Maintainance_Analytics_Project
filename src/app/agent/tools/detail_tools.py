@@ -1,78 +1,70 @@
-"""Typed tools returning row-level detail (equipment, work orders, sensor readings) from Gold.
+"""query_kpi_table: answers a detail question about the KPI table in four steps: describe the table, the LLM
+writes SQL from that description, a parser guardrail accepts only a single read-only SELECT capped at 200 rows,
+then the SQL is run. This file has no Databricks code: kpi_tools passes in `get_schema` and `run_sql`
+(contract in tools/README.md)."""
 
-Runs LLM-written SQL over the KPI tables kpi_tools has loaded into TABLES; never calls Databricks.
-"""
-
-import logging
-import sqlite3
-import time
-
+import sqlglot
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
-
-log = logging.getLogger(__name__)
+from sqlglot import exp
 
 MAX_ROWS = 200
-TIMEOUT_S = 5
-_ALLOWED = {sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION}
+
+# Anything that writes data or changes tables (DML/DDL/Command cover insert, update, delete, merge, create, drop, ...)
+_FORBIDDEN = (exp.DML, exp.DDL, exp.Command, exp.Into)
+_SQL_PROMPT = (
+    "Write ONE read-only Databricks SQL SELECT over the table kpi_table. Description of the table:\n{description}\n"
+    "Use only these columns. Return only the SQL, no explanation."
+)
 
 
-# Hand-off point: kpi_tools puts the KPI tables it fetched here as {name: [row dicts]}.
-# ponytail: plain dict, no TTL/eviction; kpi_tools owns freshness (cache) later.
-TABLES: dict[str, list[dict]] = {}
+def describe_table(schema: dict) -> str:
+    """Step 1: plain text for the LLM from kpi_tools' schema: {"columns": [{"name", "type", "comment"?}], "sample"?: [row dict]}."""
+    cols = "\n".join(
+        f"- {c['name']} ({c['type']})" + (f": {c['comment']}" if c.get("comment") else "") for c in schema["columns"]
+    )
+    rows = "\n".join(str(r) for r in schema.get("sample", []))
+    return f"Table kpi_table, columns:\n{cols}" + (f"\nSample rows:\n{rows}" if rows else "")
 
 
-def _q(name: str) -> str:
-    return '"' + name.replace('"', '""') + '"'
-
-
-def _connect(tables: dict[str, list[dict]]) -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    for name, rows in tables.items():
-        if not rows:
-            continue
-        cols = list(rows[0])
-        conn.execute(f"CREATE TABLE {_q(name)} ({', '.join(map(_q, cols))})")
-        conn.executemany(
-            f"INSERT INTO {_q(name)} VALUES ({', '.join('?' * len(cols))})",
-            [[v if v is None or isinstance(v, (int, float, str)) else str(v) for v in (r.get(c) for c in cols)] for r in rows],
-        )
-    # Lock down only after loading: read-only SELECT, no ATTACH/PRAGMA/DDL/writes.
-    conn.set_authorizer(lambda action, *_: sqlite3.SQLITE_OK if action in _ALLOWED else sqlite3.SQLITE_DENY)
-    deadline = time.monotonic() + TIMEOUT_S
-    conn.set_progress_handler(lambda: time.monotonic() > deadline, 10_000)
-    return conn
-
-
-def describe_kpi_tables() -> str:
-    """Schema text (`table(col, col, ...)`) of the loaded KPI tables, for the planner prompt."""
-    return "\n".join(f"{t}({', '.join(rows[0])})" for t, rows in TABLES.items() if rows)
-
-
-@tool
-def query_kpi_tables(sql: str) -> dict:
-    """Drill into the KPI tables already fetched by get_kpi (call get_kpi first).
-
-    Pass ONE read-only SQLite SELECT over those tables, e.g. group/sort/filter for row-level detail.
-    Returns columns, rows (max 200), row_count, truncated and the executed sql, or an error.
-    """
-    start = time.monotonic()
-    if not any(TABLES.values()):
-        return {"error": "no KPI data loaded; call get_kpi first"}
-    conn = _connect(TABLES)
+def check_sql(sql: str) -> str | None:
+    """Step 3a: None if `sql` is a single read-only SELECT, else the reason it is rejected."""
     try:
-        cur = conn.execute(sql)
-        rows = cur.fetchmany(MAX_ROWS + 1)
-        result = {
-            "columns": [d[0] for d in cur.description or []],
-            "rows": [list(r) for r in rows[:MAX_ROWS]],
-            "row_count": min(len(rows), MAX_ROWS),
-            "truncated": len(rows) > MAX_ROWS,
-            "sql": sql,
-        }
-        log.info("query_kpi_tables ok rows=%d ms=%d sql=%.200s", result["row_count"], (time.monotonic() - start) * 1000, sql)
-        return result
-    except (sqlite3.Error, sqlite3.Warning) as e:  # bad SQL, denied statement, timeout, multi-statement
-        log.warning("query_kpi_tables rejected (%s) sql=%.200s", type(e).__name__, sql)
-        return {"error": "query rejected: only a single valid read-only SELECT over the KPI tables is allowed"}
-    finally:
-        conn.close()
+        statements = sqlglot.parse(sql, read="databricks")
+    except sqlglot.errors.SqlglotError as e:
+        return f"invalid SQL: {str(e).splitlines()[0]}"
+    if len(statements) != 1 or not isinstance(statements[0], exp.Query):
+        return "only a single SELECT query is allowed"
+    if bad := statements[0].find(*_FORBIDDEN):
+        return f"{type(bad).__name__.upper()} is not allowed, queries must be read-only"
+    return None
+
+
+def limit_rows(sql: str) -> str:
+    """Step 3b: cap a checked query at MAX_ROWS rows; a smaller LIMIT written by the LLM is kept."""
+    query = sqlglot.parse_one(sql, read="databricks")
+    limit = query.args.get("limit")
+    n = limit.expression if limit else None
+    if not (isinstance(n, exp.Literal) and n.is_int and int(n.name) <= MAX_ROWS):
+        query = query.limit(MAX_ROWS)
+    return query.sql(dialect="databricks")
+
+
+def make_query_kpi_table(llm, get_schema, run_sql):
+    """Build the tool. llm: the agent's chat model; get_schema() -> schema dict; run_sql(sql) -> list of row dicts."""
+
+    @tool
+    def query_kpi_table(question: str) -> dict:
+        """Answer a detail question about the KPI table (filtered rows, top-N, per-site or per-equipment
+        breakdowns). Pass the question in plain words. Returns the SQL used and at most 200 rows."""
+        description = describe_table(get_schema())  # 1. what the table looks like
+        system, error = _SQL_PROMPT.format(description=description), None
+        for _ in range(2):  # 2. LLM writes the SQL; one retry with the rejection reason
+            human = question if not error else f"{question}\n\nYour previous query was rejected: {error}"
+            sql = llm.invoke([SystemMessage(system), HumanMessage(human)]).content.strip().strip("`").removeprefix("sql").strip()
+            if not (error := check_sql(sql)):  # 3. read-only guardrail, then the row cap
+                sql = limit_rows(sql)
+                return {"sql": sql, "rows": run_sql(sql)}  # 4. run (errors propagate, execute() reports them)
+        return {"error": f"could not create a valid read-only query: {error}"}
+
+    return query_kpi_table
