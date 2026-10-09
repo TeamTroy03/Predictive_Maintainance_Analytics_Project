@@ -12,14 +12,21 @@
 
 import json
 import os
+import uuid
 from datetime import date
 from typing import Literal, TypedDict
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from dotenv import load_dotenv
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_openai import AzureChatOpenAI
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
+
+load_dotenv()
+
 
 # ---------- Models ----------
 
@@ -72,21 +79,48 @@ def get_sql_query(equipment_id: str) -> dict:
     return {"equipment_id": equipment_id}
 
 
-TOOLS = {t.name: t for t in (get_kpi, get_equipment_detail)}  # approved allowlist
+@tool
+def get_mock_equipment_status(equipment_id: str, site_id: str | None = None) -> dict:
+    """Return the current status, last maintenance date, number of open work orders and
+    30-day alarm count of one piece of equipment."""
+    # MOCK: hardcoded test data, remove once the real tools exist
+    return {
+        "equipment_id": equipment_id,
+        "site_id": site_id or "site1",
+        "status": "running",
+        "last_maintenance": "2026-09-15",
+        "open_work_orders": 2,
+        "alarm_count_30d": 7,
+    }
+
+
+TOOLS = {t.name: t for t in (get_kpi, get_sql_query, get_mock_equipment_status)}  # approved allowlist
 
 # ---------- Prompts ----------
 
+TOOL_DOCS = "\n".join(
+    f"- {t.name}: {' '.join(t.description.split())} Arguments: {json.dumps(t.args)}"
+    for t in TOOLS.values()
+)
+
 PLANNER_PROMPT = (
     "You plan read-only analytics for an industrial predictive-maintenance assistant. "
-    "Return a plan of at most 4 steps using ONLY these tools: get_kpi(kpi_name, start_date, "
-    "end_date, site_id?, equipment_type?), get_equipment_detail(equipment_id). "
+    "Return a plan of at most 4 steps using ONLY these tools:\n"
+    f"{TOOL_DOCS}\n"
     f"Valid kpi_name values: {', '.join(sorted(VALID_KPIS))}. Dates are YYYY-MM-DD. "
-    "Do not execute anything and do not invent data or arguments."
+    "Use the most relevant tool(s) for the question and do not add steps it does not need. "
+    "Use the exact argument names above. Do not execute anything and do not invent data or arguments."
 )
 JUDGE_PROMPT = (
-    "You review a plan for a read-only maintenance assistant. Approve only if the plan answers "
-    "the question, uses the right tools, stays read-only and invents no data. Otherwise "
+    "You review a plan for a read-only maintenance assistant. These are the only approved tools "
+    f"and what they do:\n{TOOL_DOCS}\n"
+    "Approve only if the plan answers the question using these tools (a tool is suitable if its "
+    "description covers what the question asks), stays read-only and invents no data. Otherwise "
     "return 'revise' with feedback_for_planner, or 'reject' if the question cannot be answered."
+)
+SUMMARY_PROMPT = (
+    "Summarize this analysis plan for a business user in 2-3 sentences. Describe only what "
+    "will be looked up and why, in business terms. No tool names, parameters or technical terms."
 )
 EXECUTOR_PROMPT = (
     "Answer the question using ONLY the tool results provided. Never invent numbers. "
@@ -96,19 +130,30 @@ EXECUTOR_PROMPT = (
 
 # ---------- Steps ----------
 
-
-def _llm() -> AzureChatOpenAI:
-    return AzureChatOpenAI(
-        azure_endpoint=os.environ["LLM_ENDPOINT"],
-        api_key=os.environ["LLM_API_KEY"],
-        azure_deployment=os.environ["LLM_MODEL"],
-        api_version=os.environ["LLM_API_VERSION"],
-    )
+llm = AzureChatOpenAI(
+    azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
+    api_key=os.environ["AZURE_OPENAI_API_KEY"],
+    azure_deployment=os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"],
+    api_version=os.environ["OPENAI_API_VERSION"],
+    
+)
 
 
 def _ask(schema, system: str, human: str):
-    llm = _llm().with_structured_output(schema, method="function_calling")
-    return llm.invoke([SystemMessage(system), HumanMessage(human)])
+    structured = llm.with_structured_output(schema, method="function_calling")
+    return structured.invoke([SystemMessage(system), HumanMessage(human)])
+
+
+def plan_text(question: str, p: Plan) -> str:
+    """Full plan text, then a plain-language summary for the business user."""
+    full = f"Approach: {p.approach}\n" + "\n".join(
+        f"{i}. {s.tool}({json.dumps(s.args)}) - {s.purpose}" for i, s in enumerate(p.steps, 1)
+    )
+    summary = llm.invoke([
+        SystemMessage(SUMMARY_PROMPT),
+        HumanMessage(f"Question: {question}\n\nPlan:\n{full}"),
+    ]).content
+    return f"{full}\n-------------\n{summary}"
 
 
 def plan(question: str, feedback: str | None = None) -> Plan:
@@ -122,6 +167,14 @@ def check_plan(p: Plan, allowed_sites: list[str]) -> list[str]:
     for s in p.steps:
         if s.tool not in TOOLS:
             errors.append(f"Tool '{s.tool}' is not allowed.")
+            continue
+        schema = TOOLS[s.tool].get_input_schema().model_json_schema()
+        missing = set(schema.get("required", [])) - s.args.keys()
+        unknown = s.args.keys() - schema["properties"].keys()
+        if missing or unknown:
+            errors.append(
+                f"{s.tool}: missing arguments {sorted(missing)}, unknown arguments {sorted(unknown)}."
+            )
             continue
         site = s.args.get("site_id")
         if site and site not in allowed_sites:
@@ -143,15 +196,17 @@ def judge_plan(question: str, p: Plan) -> PlanReview:
 
 def execute(question: str, p: Plan) -> AssistantAnswer:
     limitations, messages = [], [SystemMessage(EXECUTOR_PROMPT), HumanMessage(question)]
-    for i, s in enumerate(p.steps):
+    calls = [{"name": s.tool, "args": s.args, "id": f"step{i}"} for i, s in enumerate(p.steps)]
+    messages.append(AIMessage(content="", tool_calls=calls))  # ToolMessages must answer tool_calls
+    for call in calls:
         try:
-            result = TOOLS[s.tool].invoke(s.args)
+            result = TOOLS[call["name"]].invoke(call["args"])
         except Exception as e:  # tool errors are reported, not raised
             result = None
-            limitations.append(f"Tool '{s.tool}' failed: {e}")
-        messages.append(ToolMessage(json.dumps(result, default=str), tool_call_id=f"step{i}"))
-    llm = _llm().with_structured_output(AssistantAnswer, method="function_calling")
-    answer = llm.invoke(messages)
+            limitations.append(f"Tool '{call['name']}' failed: {e}")
+        messages.append(ToolMessage(json.dumps(result, default=str), tool_call_id=call["id"]))
+    answer = llm.with_structured_output(AssistantAnswer, method="function_calling").invoke(messages)
+    answer.source_measure = ", ".join(c["name"] for c in calls)  # traceable, not LLM-written
     answer.limitations += limitations
     return answer
 
@@ -171,8 +226,9 @@ class State(TypedDict, total=False):
     plan: Plan
     feedback: str | None
     revisions: int
-    verdict: str  # approve | revise | reject
+    verdict: str  # approve | revise | reject | declined
     reasons: list[str]
+    plan_text: str  # full plan + business summary shown to the user
     answer: AssistantAnswer
 
 
@@ -187,18 +243,30 @@ def evaluator_node(s: State) -> State:
     else:
         review = judge_plan(s["question"], s["plan"])
     revisions = s.get("revisions", 0) + (review.verdict == "revise")
-    return {
+    out = {
         "verdict": review.verdict,
         "reasons": review.reasons,
         "feedback": review.feedback_for_planner,
         "revisions": revisions,
     }
+    if review.verdict == "approve":  # built here so the LLM summary is not re-run on resume
+        out["plan_text"] = plan_text(s["question"], s["plan"])
+    return out
 
 
 def route_after_evaluator(s: State) -> str:
+    if s["verdict"] == "approve":
+        return "approval"
     if s["verdict"] == "revise" and s["revisions"] <= MAX_REVISIONS:
         return "planner"
-    return "executor"  # approved, rejected, or revisions exhausted
+    return "executor"  # rejected or revisions exhausted
+
+
+def approval_node(s: State) -> State:
+    """Pause until the user approves or declines the plan."""
+    if interrupt(s["plan_text"]):
+        return {}
+    return {"verdict": "declined", "reasons": ["The user declined the plan."]}
 
 
 def executor_node(s: State) -> State:
@@ -210,15 +278,30 @@ def executor_node(s: State) -> State:
 _graph = StateGraph(State)
 _graph.add_node("planner", planner_node)
 _graph.add_node("evaluator", evaluator_node)
+_graph.add_node("approval", approval_node)
 _graph.add_node("executor", executor_node)
 _graph.add_edge(START, "planner")
 _graph.add_edge("planner", "evaluator")
-_graph.add_conditional_edges("evaluator", route_after_evaluator, ["planner", "executor"])
+_graph.add_conditional_edges("evaluator", route_after_evaluator, ["planner", "approval", "executor"])
+_graph.add_edge("approval", "executor")
 _graph.add_edge("executor", END)
-app = _graph.compile()
+app = _graph.compile(checkpointer=MemorySaver())  # checkpointer is required for interrupt()
 
 
-def run(question: str, allowed_sites: list[str]) -> AssistantAnswer:
-    return app.invoke({"question": question, "allowed_sites": allowed_sites})["answer"]
+def ask_on_console(text: str) -> bool:
+    return input(f"\n{text}\n\nApprove this plan? [y/N] ").strip().lower() == "y"
 
-run("What is the asset availability for the last 30 days?", ["site1", "site2"])
+
+def run(question: str, allowed_sites: list[str], approve=ask_on_console) -> AssistantAnswer:
+    config = {"configurable": {"thread_id": uuid.uuid4().hex}}
+    result = app.invoke({"question": question, "allowed_sites": allowed_sites}, config)
+    if "__interrupt__" in result:  # waiting for the user's decision
+        result = app.invoke(Command(resume=approve(result["__interrupt__"][0].value)), config)
+    return result["answer"]
+
+
+if __name__ == "__main__":
+    print(run(
+        "What is the current status of equipment EQ-001?",
+        ["site1", "site2"],
+    ))
