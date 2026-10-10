@@ -17,6 +17,8 @@ dependencies = [
     "langgraph",
     "python-dotenv>=1.2.4",
     "sqlglot>=30.22.0",
+    "databricks>=0.2",
+    "databricks-sql-connector>=4.6.0",
 ]
 
 [project.optional-dependencies]
