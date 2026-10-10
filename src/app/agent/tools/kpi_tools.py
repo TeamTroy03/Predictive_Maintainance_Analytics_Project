@@ -63,7 +63,6 @@ KpiName = Literal[*KPIS]
 
 # request field -> (key column, Gold dimension, condition). Gold stores codes and IDs upper-cased.
 FILTERS = {
-    "site_code": ("site_key", "dim_site", "site_code = UPPER(:site_code)"),
     "equipment_type": ("equipment_type_key", "dim_equipment_type", "LOWER(equipment_type) = LOWER(:equipment_type)"),
     "equipment_id": ("equipment_key", "dim_equipment", "equipment_id = UPPER(:equipment_id)"),
 }
@@ -74,7 +73,6 @@ class KpiRequest(BaseModel):
     kpi_name: KpiName
     start_month: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
     end_month: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")  # inclusive
-    site_code: str | None = Field(None, pattern=r"^[A-Za-z0-9_-]{1,32}$")
     equipment_type: str | None = Field(None, pattern=r"^[A-Za-z0-9][A-Za-z0-9 _/().-]{0,63}$")
     equipment_id: str | None = Field(None, pattern=r"^[A-Za-z0-9_-]{1,32}$")
 
@@ -142,13 +140,13 @@ def compute_kpi(request: KpiRequest, run=run_query) -> dict:
 
 
 @tool
-def get_kpi(kpi_name: KpiName, start_month: str, end_month: str, site_code: str | None = None,
+def get_kpi(kpi_name: KpiName, start_month: str, end_month: str,
             equipment_type: str | None = None, equipment_id: str | None = None) -> dict:
     """Return one governed KPI value from the Gold layer, calculated in the database (never estimate it yourself).
-    Months are YYYY-MM, both inclusive. Optional filters: site_code, equipment_type, equipment_id.
+    Months are YYYY-MM, both inclusive. Optional filters: equipment_type, equipment_id.
     The result has the value, unit, applied filters, source_measure, as_of_ts, row_count and limitations."""
     try:
         return compute_kpi(KpiRequest(kpi_name=kpi_name, start_month=start_month, end_month=end_month,
-                                      site_code=site_code, equipment_type=equipment_type, equipment_id=equipment_id))
+                                      equipment_type=equipment_type, equipment_id=equipment_id))
     except ValidationError as e:
         return {"error": f"Invalid KPI request: {e.errors(include_url=False, include_input=False)}"}

@@ -1,89 +1,166 @@
-# Agent tools: how `detail_tools.py` works and what `kpi_tools.py` must provide
+# Agent tools
 
-Spec §6.5: typed tools the assistant may call; the LLM must never bypass the semantic layer, invent data or change data.
+Spec §6.5: typed tools the assistant may call. The LLM must never bypass the semantic layer, invent
+data or change data. The tools are the only code path from the assistant to Gold. They are registered
+in the `TOOLS` allowlist in [`../agent.py`](../README.md).
 
-## How `detail_tools.py` works (done)
+| File | Tool(s) | Status |
+|---|---|---|
+| `kpi_tools.py` | `get_kpi` | Implemented, queries Gold on Databricks (tested live, see Tests) |
+| `detail_tools.py` | `get_kpi_schema`, `validate_and_format_kpi_query` | Implemented and unit-tested, **not wired into `agent.py`** |
 
-Two atomic tools from `make_kpi_tools(get_schema)`, so the Planner can select them, the Judge can review the calls, and
-the Executor writes the SQL itself in between (no LLM inside the tools).
+## `kpi_tools.py`: `get_kpi`
+
+One governed KPI value for a month range, with optional filters. **The LLM only picks the KPI and the
+filters; the number is calculated in Databricks**, never estimated by the model and never written as
+SQL by the model.
 
 ```
-get_kpi_schema()             ──► get_schema() formatted as text: columns, types, comments, sample rows
-   (Executor LLM writes a Databricks SQL SELECT from that text)
-validate_and_format_kpi_query(sql_query) ──► strips ``` fences
-                             ──► check_sql    sqlglot parser: ONE statement, a SELECT only; rejects INSERT/UPDATE/DELETE/MERGE,
-                                              CREATE/DROP/ALTER, SELECT ... INTO, stacked statements, SHOW and other commands
-                                 limit_rows   adds LIMIT 200 (keeps a smaller LIMIT, replaces a bigger or missing one)
-                             ──► {"valid": True, "sql": "..."}   (or {"error": "Guardrail rejected query: ..."})
+get_kpi(kpi_name, start_month, end_month, equipment_type?, equipment_id?)
+   └─► KpiRequest (pydantic)  validates the arguments        ── invalid ─► {"error": "Invalid KPI request: ..."}
+   └─► compute_kpi            builds ONE parameterized SELECT on gold_kpi_equipment_month
+          └─► run_query       Databricks SQL connector, returns the single row
+   └─► dict with value, unit, filters, source_measure, as_of_ts, gold_loaded_ts, row_count, limitations
 ```
 
-`validate_and_format_kpi_query` does **not** run anything: it only returns the checked, limited SQL. Sending it to
-Databricks is the job of whoever calls the tool next (see `run_sql` below). `detail_tools.py` has no Databricks code; it
-receives only `get_schema` from `kpi_tools.py`.
+### Arguments
 
-## What we need from `kpi_tools.py`
+| Argument | Rule |
+|---|---|
+| `kpi_name` | One of the 12 KPIs below (`Literal` built from `KPIS`) |
+| `start_month`, `end_month` | `YYYY-MM`, both inclusive; `end_month` must not be before `start_month` |
+| `equipment_type` | optional, letters/digits/space and `_/().-`, up to 64 chars, case-insensitive (matches `dim_equipment_type.equipment_type`) |
+| `equipment_id` | optional, `[A-Za-z0-9_-]{1,32}`, case-insensitive (matches `dim_equipment.equipment_id`) |
 
-Everything that talks to Azure Databricks lives in `kpi_tools.py` (SDK `databricks-sdk`, token and host from
-environment variables / Key Vault, never in code).
+Unknown extra arguments are rejected (`extra="forbid"`). The same `KpiRequest` is used by
+`agent.check_plan`, so a bad plan is caught before it runs.
 
-### 1. `get_schema() -> dict`
+### The KPIs (`KPIS`)
 
-Return the table the assistant may query, called as `kpi_table`:
+`KPIS` is the single catalogue: name → `formula`, `unit`, `definition`, `limitations` (and an optional
+`note`). The formulas are copied from `KPI_FORMULAS` in the Gold notebook. The additive columns of
+`gold_kpi_equipment_month` are summed over the selected rows and then the formula is applied, so a
+ratio over several months or equipment is a ratio of sums, not an average of ratios.
+
+| `kpi_name` | Unit | Formula (summary) |
+|---|---|---|
+| `availability` | ratio (0-1) | (calendar hours − downtime hours) / calendar hours |
+| `unplanned_downtime_hours` | hours | sum of `unplanned_downtime_hours` |
+| `unplanned_failures` | count | sum of `unplanned_failure_count` |
+| `mtbf_hours` | hours | operating uptime hours / unplanned failures |
+| `mttr_hours` | hours | unplanned downtime hours / unplanned failures |
+| `overdue_work_orders` | count | sum of `overdue_work_order_count` |
+| `alarm_rate` | readings per asset-day | alarm count / asset days |
+| `alarm_warning_rate` | readings per asset-day | warning count / asset days |
+| `alarm_critical_rate` | readings per asset-day | critical count / asset days |
+| `maintenance_cost_eur` | EUR | sum of `maintenance_cost_eur` |
+| `repeat_failure_rate` | ratio (0-1) | repeat failures / unplanned failures |
+| `work_orders` | count | sum of `work_order_count` |
+
+The planner prompt in `agent.py` is generated from `KPIS`, so adding a KPI here makes it available to
+the assistant. Keep the formula in sync with the Gold notebook.
+
+### Query construction and safety
+
+- The formula comes only from the `KPIS` constant. User values are only ever **bound parameters**
+  (`:start`, `:end`, `:equipment_type`, ...), never concatenated into the SQL.
+- Table names come from configuration and must match `[\w.]+` (`_table()` raises otherwise).
+- Month filter: `month_start_date_key BETWEEN :start AND :end` (keys are `yyyyMMdd`, first day of month).
+- Unknown members (`-1` keys for equipment, site, equipment type) are always excluded.
+- Filters (`FILTERS`) are applied as `key IN (SELECT key FROM <dimension> WHERE <condition>)`, comparing
+  upper/lower-cased because Gold stores codes and IDs upper-cased.
+- The query is a single `SELECT` that returns `value`, `row_count`, `as_of_ts` and `gold_loaded_ts`.
+
+### Result
 
 ```python
 {
-    "columns": [{"name": "alarm_rate", "type": "double", "comment": "share of readings above alarm limit"}, ...],
-    "sample": [{"alarm_rate": "0.02", "site": "Plant A"}, ...],   # optional, 3-5 rows
+    "kpi_name": "mttr_hours", "value": 4.2, "unit": "hours",
+    "filters": {"start_month": "2026-01", "end_month": "2026-03", "equipment_type": "Pump"},
+    "source_measure": "<catalog>.<schema>.<prefix>gold_kpi_equipment_month: SUM(...) / NULLIF(...)",
+    "as_of_ts": "...", "gold_loaded_ts": "...", "row_count": 37,
+    "limitations": ["..."],
 }
 ```
 
-- `comment` is optional but makes the generated SQL better (Unity Catalog column comments).
-- Suggested source: `w.tables.get("catalog.schema.table")` for `.columns[i].name / .type_text / .comment`, and
-  `execute_statement(... "SELECT * FROM catalog.schema.table LIMIT 5")` for the sample.
-- Cache it (it rarely changes); do not call Databricks on every question.
-- The LLM will write `FROM kpi_table`, so `run_sql` must make that name resolve (default catalog/schema plus a
-  `kpi_table` view, or rewrite the name to `catalog.schema.table`).
+`source_measure`, `as_of_ts` and `gold_loaded_ts` give the evidence and lineage for the answer;
+`limitations` always carries the KPI's own caveats (e.g. monthly grain, partial latest month, alarm
+readings are not distinct events).
 
-### 2. `run_sql(sql: str) -> list[dict]`
+| Situation | Result |
+|---|---|
+| No Gold rows match the period/filters | `value: None`, `row_count: 0`, limitation to check the months and filter spelling |
+| Zero denominator (e.g. no failures, so MTBF/MTTR/repeat rate are undefined) | `value: None` (never 0 or infinity), limitation explaining it |
+| Invalid arguments | `{"error": "Invalid KPI request: ..."}`, no query is sent |
+| Databricks/connection error | exception from `run_query`; `agent.execute()` catches it and reports it in `limitations` |
 
-Not used by `detail_tools.py` any more. Whoever executes the SQL returned by `validate_and_format_kpi_query` needs a
-function like this: run one SQL string against Databricks and return rows as dicts keyed by column name:
+`mtbf_hours` carries an **open decision** note: it uses `operating_uptime_hours` (scaled by
+`operating_share`), not calendar uptime.
 
-```python
-r = w.statement_execution.execute_statement(warehouse_id=..., statement=sql, wait_timeout="30s", row_limit=200)
-names = [c.name for c in r.manifest.schema.columns]
-return [dict(zip(names, row)) for row in (r.result.data_array or [])]
+### Configuration
+
+Environment variables or `.env` (never in code; Key Vault in the deployed solution). The Databricks
+connector is imported inside `run_query`, so the module can be imported without it installed.
+
+| Variable | Meaning |
+|---|---|
+| `DATABRICKS_HOST` | workspace / SQL warehouse hostname |
+| `DATABRICKS_HTTP_PATH` | SQL warehouse HTTP path |
+| `DATABRICKS_TOKEN` | access token, give its identity `SELECT` only on the Gold tables (§6.6) |
+| `GOLD_CATALOG`, `GOLD_SCHEMA` | where the Gold tables live |
+| `GOLD_TABLE_PREFIX` | optional, defaults to `test_` (tables are `<prefix>gold_<name>`, e.g. `test_gold_dim_site`) |
+
+### Tests
+
+`.tests/test_kpi_tools.py` runs against the **real Gold tables** (marked `integration`, skipped when the
+variables above are missing):
+
+```bash
+pytest src/app/agent/tools/.tests -v
 ```
 
-Notes on the SDK format:
-- `data_array` is a list of lists of **strings** (numbers and timestamps too, `NULL` is `None`). Converting to real
-  types with `manifest.schema.columns[i].type_name` is optional.
-- Check `r.status.state`; raise on `FAILED` / timeout. `agent.execute()` reports exceptions as limitations.
-- Large results arrive in chunks (`next_chunk_index`); with `row_limit=200` one chunk is enough.
+No numbers are hard-coded because Gold is rebuilt on every pipeline run. The tests check invariants:
+all 12 KPIs run (whole fleet and with all filters), ratios are within 0-1, other KPIs are not negative,
+warning + critical = alarm rate, MTTR = hours / failures, zero-denominator cases give `None` with a
+limitation, additive KPIs over a range equal the sum of the months, filters only narrow the result,
+equipment ID/type filters ignore case, empty periods and unknown equipment return `None` with a limitation, and bad
+requests (end before start, invalid month, SQL injection attempt in a filter) return an error without
+running a query.
 
-**Required safety:** since nothing in `detail_tools` guarantees the SQL passed through the validator, start `run_sql`
-with
+The tests live in a dot-folder under `src/`, so run them by path as shown. Not covered yet: an offline unit test of `compute_kpi` with a stub `run` (the function accepts one, e.g.
+`compute_kpi(request, run=fake)`), so CI without Databricks could check the generated SQL and params.
 
-```python
-from app.agent.tools.detail_tools import check_sql, limit_rows
-if reason := check_sql(sql):
-    raise ValueError(reason)
-sql = limit_rows(sql)
+## `detail_tools.py`: guarded SQL tools (not wired in yet)
+
+`make_kpi_tools(get_schema)` returns two atomic tools so the planner can select them, the judge can
+review the calls and the executor LLM writes the SQL in between (there is no LLM inside the tools):
+
+```
+get_kpi_schema()                         ─► get_schema() as text: columns, types, comments, sample rows
+   (the LLM writes a Databricks SELECT FROM kpi_table from that text)
+validate_and_format_kpi_query(sql_query) ─► strips ``` fences
+                                         ─► check_sql   sqlglot parse: ONE statement, a SELECT only; rejects
+                                                        INSERT/UPDATE/DELETE/MERGE, CREATE/DROP/ALTER,
+                                                        SELECT ... INTO, stacked statements, other commands
+                                            limit_rows  keeps a LIMIT <= 200, replaces a bigger or missing one
+                                         ─► {"valid": True, "sql": "..."}  or  {"error": "Guardrail rejected query: ..."}
 ```
 
-so no code path can send unchecked SQL to Databricks. Also pass `row_limit=200` and give the token's identity
-`SELECT` only on the Gold table (least privilege, spec §6.6).
+It does **not** run anything and contains no Databricks code. It only receives a `get_schema` function.
+Covered by `tests/unit/test_detail_tools.py`.
 
-### 3. Wire into `agent.py`
+### Open items before it can be used
 
-```python
-from app.agent.tools.detail_tools import make_kpi_tools
-get_kpi_schema, validate_and_format_kpi_query = make_kpi_tools(get_schema)
-TOOLS = {t.name: t for t in (get_kpi, get_kpi_schema, validate_and_format_kpi_query, ...)}
-```
-
-## Tests
-
-`tests/unit/test_detail_tools.py` mocks `get_schema` and covers `check_sql`, `limit_rows` and both tools. For
-`kpi_tools` please add a test with a mocked `WorkspaceClient` that checks the row mapping and that unsafe SQL raises
-before any call is made.
+- **`kpi_tools.py` does not provide `get_schema()` or `run_sql()`** (the earlier plan for this file).
+  It currently has only `get_kpi` and `run_query`. To use `detail_tools` we still need:
+  - `get_schema() -> {"columns": [{"name", "type", "comment"?}], "sample"?: [row dict]}` for the table
+    exposed as `kpi_table`, cached (Unity Catalog `columns[i].name/type_text/comment`, plus a
+    `SELECT ... LIMIT 5` sample);
+  - something that **runs** the SQL from `validate_and_format_kpi_query` and returns rows as dicts.
+    It must start with `check_sql` + `limit_rows` so no unchecked SQL can reach Databricks, resolve the
+    name `kpi_table` to the real Gold table, and use a token with `SELECT`-only rights. Note that
+    `run_query` returns a single row and accepts no row limit, so it is not enough for this.
+- Register the tools: `get_kpi_schema, validate_and_format_kpi_query = make_kpi_tools(get_schema)`, then add
+  them to `TOOLS` in `agent.py` (and replace the placeholder tools there).
+- The docstrings in `detail_tools.py` still mention `execute_kpi_query` and a `run_sql` argument, which no
+  longer exist.
