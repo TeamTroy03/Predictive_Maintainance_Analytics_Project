@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 import pytest
 
 from app.agent.tools import detail_tools as dt
@@ -34,22 +32,19 @@ def test_limit_rows():
     assert dt.limit_rows("SELECT * FROM kpi_table LIMIT 5000").endswith("LIMIT 200")
 
 
-def test_describe_table():
-    text = dt.describe_table(SCHEMA)
+def test_get_kpi_schema():
+    get_schema_tool, _ = dt.make_kpi_tools(lambda: SCHEMA)
+    text = get_schema_tool.invoke({})
     assert "- site (string): plant name" in text and "- mttr (double)" in text and "'A'" in text
 
 
-def test_query_kpi_table_end_to_end():
-    replies = iter(["DROP TABLE kpi_table", "```sql\nSELECT site, mttr FROM kpi_table;\n```"])
-    llm = SimpleNamespace(invoke=lambda messages: SimpleNamespace(content=next(replies)))
-    ran = []
-    tool = dt.make_query_kpi_table(llm, lambda: SCHEMA, lambda sql: ran.append(sql) or [{"site": "A"}])
-    out = tool.invoke({"question": "mttr per site"})
-    assert out == {"sql": "SELECT site, mttr FROM kpi_table LIMIT 200", "rows": [{"site": "A"}]}
-    assert ran == [out["sql"]]  # the rejected DROP was never run
+def test_validate_kpi_query_strips_fences_checks_and_limits():
+    _, validate = dt.make_kpi_tools(lambda: SCHEMA)
+    out = validate.invoke({"sql_query": "```sql\nSELECT site, mttr FROM kpi_table;\n```"})
+    assert out == {"valid": True, "sql": "SELECT site, mttr FROM kpi_table LIMIT 200"}
 
 
-def test_query_kpi_table_gives_up_without_running():
-    llm = SimpleNamespace(invoke=lambda messages: SimpleNamespace(content="DELETE FROM kpi_table"))
-    tool = dt.make_query_kpi_table(llm, lambda: SCHEMA, lambda sql: pytest.fail("must not run"))
-    assert "error" in tool.invoke({"question": "wipe it"})
+def test_validate_kpi_query_rejects_writes():
+    _, validate = dt.make_kpi_tools(lambda: SCHEMA)
+    out = validate.invoke({"sql_query": "DELETE FROM kpi_table"})
+    assert "error" in out and "valid" not in out
