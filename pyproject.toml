@@ -37,3 +37,7 @@ include = ["app*", "data*"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "integration: needs a deployed or configured environment (Azure OpenAI, Databricks); run manually",
+    "data_quality: data quality rules on local fixtures",
+]
