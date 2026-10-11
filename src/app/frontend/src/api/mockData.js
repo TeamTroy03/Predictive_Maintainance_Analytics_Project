@@ -115,13 +115,18 @@ export async function getFleetSummary() {
   }
 }
 
-export async function getAssets() {
+// Same shape as FastAPI: { items, total, page, page_size }, filtered like the server does
+export async function getAssets({ status, q, page = 1, page_size = 50 } = {}) {
   await delay()
-  return ASSETS.map((a) => ({
+  const needle = (q ?? '').toLowerCase()
+  const all = ASSETS.filter(
+    (a) => (!status || a.status === status) && `${a.id} ${a.name} ${a.type} ${a.line}`.toLowerCase().includes(needle),
+  ).map((a) => ({
     ...a,
     active_alarms: ALARMS.filter((al) => al.asset_id === a.id && !al.acknowledged).length,
     last_maintenance: WORK_ORDERS.filter((w) => w.asset_id === a.id && w.completed).map((w) => w.completed).sort().at(-1) ?? null,
   }))
+  return { items: all.slice((page - 1) * page_size, page * page_size), total: all.length, page, page_size }
 }
 
 export async function getAsset(assetId) {

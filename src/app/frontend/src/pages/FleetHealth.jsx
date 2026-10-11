@@ -37,28 +37,31 @@ function StatusDistribution({ counts }) {
 export default function FleetHealth() {
   const navigate = useNavigate()
   const summary = useApi(() => api.getFleetSummary())
-  const assets = useApi(() => api.getAssets())
+  // The server lists the most urgent assets first, so the first page is enough
+  const assets = useApi(() => api.getAssets({ page_size: 10 }))
 
   if (summary.error) return <ErrorBox error={summary.error} onRetry={summary.reload} />
   if (!summary.data) return <Loading />
 
-  const { kpis, status_counts, availability_trend, as_of } = summary.data
-  const attention = (assets.data ?? [])
+  const { kpis, status_counts, availability_trend, as_of, period_from, period_to } = summary.data
+  // Real data: the KPIs cover the whole Gold period and the trend is monthly. Mock data is "last 30 days".
+  const period = period_from ? `${period_from} to ${period_to}` : 'last 30 days'
+  const attention = (assets.data?.items ?? [])
     .filter((a) => a.status !== 'operational')
     .sort((a, b) => URGENCY[a.status] - URGENCY[b.status])
 
   return (
     <div>
-      <PageHeader title="Fleet Health Overview" subtitle={`All assets in Plant 4 · last 30 days · data as of ${timeAgo(as_of)}`} />
+      <PageHeader title="Fleet Health Overview" subtitle={`All assets · ${period} · data as of ${timeAgo(as_of)}`} />
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <KpiCard label="Asset availability" value={fmtNumber(kpis.availability_pct)} unit="%" hint="Target ≥ 95%" tone={kpis.availability_pct >= 95 ? 'good' : 'bad'} />
-        <KpiCard label="Unplanned downtime" value={fmtNumber(kpis.unplanned_downtime_h)} unit="h" hint="Last 30 days" />
+        <KpiCard label="Unplanned downtime" value={fmtNumber(kpis.unplanned_downtime_h)} unit="h" hint={period} />
         <KpiCard label="MTBF" value={fmtNumber(kpis.mtbf_h, 0)} unit="h" hint="Mean time between failures" />
         <KpiCard label="MTTR" value={fmtNumber(kpis.mttr_h)} unit="h" hint="Mean time to repair" />
         <KpiCard label="Repeat-failure rate" value={fmtNumber(kpis.repeat_failure_pct)} unit="%" hint="Target < 5%" tone={kpis.repeat_failure_pct < 5 ? 'good' : 'bad'} />
         <KpiCard label="Overdue work orders" value={kpis.overdue_work_orders} hint="Open past due date" tone={kpis.overdue_work_orders > 0 ? 'warn' : 'good'} />
-        <KpiCard label="Maintenance cost" value={fmtEuro(kpis.maintenance_cost_eur)} hint="Last 30 days" />
+        <KpiCard label="Maintenance cost" value={fmtEuro(kpis.maintenance_cost_eur)} hint={period} />
         <KpiCard label="Alarm rate" value={fmtNumber(kpis.alarm_rate_per_h)} unit="/h" hint="Alarms per hour" />
       </div>
 
@@ -67,7 +70,7 @@ export default function FleetHealth() {
           <StatusDistribution counts={status_counts} />
         </Card>
 
-        <Card title="Availability trend" subtitle="Daily availability, last 30 days" className="lg:col-span-2">
+        <Card title="Availability trend" subtitle={`${period_from ? 'Monthly' : 'Daily'} availability, ${period}`} className="lg:col-span-2">
           <ResponsiveContainer width="100%" height={220}>
             <LineChart data={availability_trend} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
               <CartesianGrid stroke="#f0f0f0" vertical={false} />
@@ -81,8 +84,10 @@ export default function FleetHealth() {
         </Card>
       </div>
 
-      <Card title="Assets needing attention" subtitle="Critical, warning and offline assets · click a row for details" className="mt-4">
-        {assets.loading && !assets.data ? (
+      <Card title="Assets needing attention" subtitle="The 10 most urgent critical, warning or offline assets · click a row for details, or see all under Equipment" className="mt-4">
+        {assets.error ? (
+          <ErrorBox error={assets.error} />
+        ) : assets.loading && !assets.data ? (
           <Loading />
         ) : (
           <Table
@@ -93,8 +98,8 @@ export default function FleetHealth() {
               { key: 'id', label: 'Asset', render: (a) => <div><div className="font-semibold">{a.id}</div><div className="text-xs text-gray-500">{a.name}</div></div> },
               { key: 'line', label: 'Line' },
               { key: 'status', label: 'Status', render: (a) => <StatusBadge status={a.status} /> },
-              { key: 'health_score', label: 'Health score', align: 'right', render: (a) => a.health_score ?? '–' },
-              { key: 'active_alarms', label: 'Active alarms', align: 'right' },
+              { key: 'availability_pct', label: 'Availability', align: 'right', render: (a) => (a.availability_pct == null ? '–' : `${fmtNumber(a.availability_pct, 2)} %`) },
+              { key: 'active_alarms', label: 'Alarms', align: 'right' },
             ]}
           />
         )}

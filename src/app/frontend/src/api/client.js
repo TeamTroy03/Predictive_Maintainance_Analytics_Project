@@ -13,12 +13,16 @@ const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 // For a deployed build you can set VITE_API_BASE_URL=https://your-fastapi-host
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
 
+// The session is an HttpOnly cookie set by FastAPI: the browser sends it by itself, JavaScript never sees it.
 async function request(path, options = {}) {
   const response = await fetch(`${BASE_URL}${path}`, {
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
     ...options,
   })
   if (!response.ok) {
+    // Session expired while using the app: reload, the app then shows the login page.
+    if (response.status === 401 && !path.startsWith('/api/auth/')) window.location.reload()
     const text = await response.text()
     throw new Error(`${response.status} ${response.statusText}: ${text || path}`)
   }
@@ -34,20 +38,25 @@ function query(params) {
   return qs ? `?${qs}` : ''
 }
 
+// FastAPI does not serve these yet. With real data they fail with a clear message instead of showing mock
+// data next to real KPIs. Once the endpoint exists, replace the pending(...) call with the real get/post.
+const pending = (name, mockFn) =>
+  USE_MOCK ? mockFn : () => Promise.reject(new Error(`${name}: not available yet, the backend endpoint is pending`))
+
 export const api = {
-  // Auth is done by FastAPI (OAuth + session cookie); React only asks who is signed in.
-  getMe: () => (USE_MOCK ? mock.getMe() : get('/api/auth/me')), // 401 = not signed in
-  login: () => (USE_MOCK ? mock.login() : (window.location.href = `${BASE_URL}/api/auth/login`)),
+  // Users are added by hand on the server. Login sets the session cookie; /auth/me says who is signed in (401 = nobody).
+  getMe: () => (USE_MOCK ? mock.getMe() : get('/api/auth/me')),
+  login: (email, password) => (USE_MOCK ? mock.login() : post('/api/auth/login', { email, password })),
   logout: () => (USE_MOCK ? mock.logout() : post('/api/auth/logout')),
 
   // 1. Fleet health
   getFleetSummary: () => (USE_MOCK ? mock.getFleetSummary() : get('/api/fleet/summary')),
 
-  // 4. Equipment
-  getAssets: () => (USE_MOCK ? mock.getAssets() : get('/api/assets')),
+  // 4. Equipment: { items, total, page, page_size }; filters: status, q, has_sensors, page, page_size
+  getAssets: (filters = {}) => (USE_MOCK ? mock.getAssets(filters) : get(`/api/assets${query(filters)}`)),
   getAsset: (assetId) => (USE_MOCK ? mock.getAsset(assetId) : get(`/api/assets/${assetId}`)),
 
-  // 2. Sensor trends  (range = "1h" | "24h" | "7d")
+  // 2. Sensor trends  (range = "24h" | "7d" | "30d" | "all", counted back from the asset's last reading)
   getSensorSeries: (assetId, range) =>
     USE_MOCK ? mock.getSensorSeries(assetId, range) : get(`/api/assets/${assetId}/sensors${query({ range })}`),
 
@@ -56,13 +65,12 @@ export const api = {
   getWorkOrders: (filters = {}) =>
     USE_MOCK ? mock.getWorkOrders(filters) : get(`/api/maintenance/work-orders${query(filters)}`),
 
-  // 5. Critical exceptions / alarms
+  // 5. Critical exceptions / alarms (Gold keeps no acknowledgements, so there is nothing to acknowledge)
   getAlarms: (filters = {}) => (USE_MOCK ? mock.getAlarms(filters) : get(`/api/alarms${query(filters)}`)),
-  acknowledgeAlarm: (alarmId) => (USE_MOCK ? mock.acknowledgeAlarm(alarmId) : post(`/api/alarms/${alarmId}/ack`)),
+  acknowledgeAlarm: pending('Alarm acknowledgement', mock.acknowledgeAlarm),
 
-  // AI agent (FastAPI forwards this to the agent backend)
-  askAgent: (message, context, history) =>
-    USE_MOCK ? mock.askAgent(message, context) : post('/api/agent/chat', { message, context, history }),
+  // AI agent (needs the two-step /assistant/query + /assistant/approve flow)
+  askAgent: pending('AI assistant', mock.askAgent),
 }
 
 export const isMockMode = USE_MOCK

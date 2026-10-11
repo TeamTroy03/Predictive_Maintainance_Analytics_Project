@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api } from '../api/client.js'
+import { api, isMockMode } from '../api/client.js'
 import { useApi } from '../hooks/useApi.js'
 import { Card, PageHeader, StatusBadge, Loading, ErrorBox, Table, Segmented } from '../components/ui.jsx'
 import { useAgent } from '../components/AgentPanel.jsx'
@@ -8,11 +8,13 @@ import { fmtDateTime, timeAgo } from '../format.js'
 
 const SEVERITY_RANK = { critical: 0, warning: 1, info: 2 }
 const REFRESH_SECONDS = 30
+// Gold keeps no acknowledged/cleared state, so acknowledging only exists in the demo (mock) mode
+const CAN_ACKNOWLEDGE = isMockMode
 
 export default function Alarms() {
   const [severity, setSeverity] = useState('')
   const [showAcked, setShowAcked] = useState(false)
-  const alarms = useApi(() => api.getAlarms())
+  const alarms = useApi(() => api.getAlarms({ limit: 500 }))
 
   // Simple polling: reload the alarm list every 30 seconds
   useEffect(() => {
@@ -30,11 +32,13 @@ export default function Alarms() {
 
   return (
     <div>
-      <PageHeader title="Critical Exceptions & Alarms" subtitle={`Unacknowledged alarms first, then by severity · refreshes every ${REFRESH_SECONDS} s`}>
-        <label className="flex items-center gap-2 text-sm text-gray-600">
-          <input type="checkbox" checked={showAcked} onChange={(e) => setShowAcked(e.target.checked)} className="accent-brand" />
-          Show acknowledged
-        </label>
+      <PageHeader title="Critical Exceptions & Alarms" subtitle={`${CAN_ACKNOWLEDGE ? 'Unacknowledged alarms first, then ' : ''}Most severe first, newest first · refreshes every ${REFRESH_SECONDS} s`}>
+        {CAN_ACKNOWLEDGE && (
+          <label className="flex items-center gap-2 text-sm text-gray-600">
+            <input type="checkbox" checked={showAcked} onChange={(e) => setShowAcked(e.target.checked)} className="accent-brand" />
+            Show acknowledged
+          </label>
+        )}
         <Segmented
           value={severity}
           onChange={setSeverity}
@@ -77,7 +81,13 @@ export function AlarmTable({ rows, showAsset = true, onChanged }) {
     { key: 'time', label: 'Raised', render: (a) => <span title={fmtDateTime(a.time)}>{timeAgo(a.time)}</span> },
     showAsset && { key: 'asset', label: 'Asset', render: (a) => <Link to={`/equipment/${a.asset_id}`} className="font-semibold hover:text-brand">{a.asset_id}</Link> },
     { key: 'message', label: 'Condition', wrap: true },
-    { key: 'value', label: 'Value / limit', align: 'right', render: (a) => (a.value == null ? '–' : `${a.value} / ${a.threshold} ${a.unit}`) },
+    {
+      key: 'value',
+      label: 'Reading',
+      align: 'right',
+      // limit only when the API has one (Gold has no alarm limits)
+      render: (a) => (a.value == null ? '–' : `${Number(a.value.toFixed(2))}${a.threshold == null ? '' : ` / ${a.threshold}`} ${a.unit ?? ''}`),
+    },
     {
       key: 'actions',
       label: '',
@@ -85,7 +95,7 @@ export function AlarmTable({ rows, showAsset = true, onChanged }) {
         <div className="flex justify-end gap-2">
           {a.acknowledged ? (
             <span className="px-2 py-1 text-xs text-gray-400">Acknowledged</span>
-          ) : (
+          ) : !CAN_ACKNOWLEDGE ? null : (
             <button disabled={busyId === a.id} onClick={() => acknowledge(a.id)} className="rounded border border-crit/40 bg-white px-2 py-1 text-xs font-medium text-crit hover:bg-crit hover:text-white disabled:opacity-50">
               Acknowledge
             </button>

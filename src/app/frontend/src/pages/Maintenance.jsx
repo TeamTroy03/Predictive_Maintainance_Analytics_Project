@@ -21,7 +21,10 @@ export default function Maintenance() {
 
   if (summary.error) return <ErrorBox error={summary.error} onRetry={summary.reload} />
   if (!summary.data) return <Loading />
-  const { kpis, monthly, cost_by_type } = summary.data
+  const { kpis, monthly, cost_by_type, period_from, period_to } = summary.data
+  // Real data: the KPIs cover the whole Gold period. Mock data is "last 30 days" / "last 6 months".
+  const period = period_from ? `${period_from} to ${period_to}` : 'last 30 days'
+  const planned = kpis.planned_pct
 
   return (
     <div>
@@ -31,8 +34,8 @@ export default function Maintenance() {
         <KpiCard label="MTBF" value={fmtNumber(kpis.mtbf_h, 0)} unit="h" hint="Higher is better" />
         <KpiCard label="MTTR" value={fmtNumber(kpis.mttr_h)} unit="h" hint="Lower is better" />
         <KpiCard label="Overdue work orders" value={kpis.overdue_work_orders} tone={kpis.overdue_work_orders > 0 ? 'warn' : 'good'} />
-        <KpiCard label="Maintenance cost" value={fmtEuro(kpis.maintenance_cost_eur)} hint="Last 30 days" />
-        <KpiCard label="Planned vs reactive" value={`${kpis.planned_pct}%`} hint={`${100 - kpis.planned_pct}% reactive · target ≥ 85%`} tone={kpis.planned_pct >= 85 ? 'good' : 'warn'} />
+        <KpiCard label="Maintenance cost" value={fmtEuro(kpis.maintenance_cost_eur)} hint={period} />
+        <KpiCard label="Planned vs reactive" value={planned == null ? '–' : `${fmtNumber(planned)}%`} hint={planned == null ? undefined : `${fmtNumber(100 - planned)}% reactive · target ≥ 85%`} tone={planned >= 85 ? 'good' : 'warn'} />
       </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
@@ -51,10 +54,10 @@ export default function Maintenance() {
           </ResponsiveContainer>
         </Card>
 
-        <Card title="Cost by maintenance type" subtitle="Last 6 months">
+        <Card title="Cost by maintenance type" subtitle={period_from ? period : 'Last 6 months'}>
           <ResponsiveContainer width="100%" height={240}>
             <BarChart data={cost_by_type} layout="vertical" margin={{ top: 5, right: 20, left: 10, bottom: 0 }}>
-              <XAxis type="number" tickFormatter={(v) => `€${v / 1000}k`} tick={{ fontSize: 11, fill: '#6b7280' }} />
+              <XAxis type="number" tickFormatter={(v) => `€${Math.round(v / 1000).toLocaleString('en-GB')}k`} tick={{ fontSize: 11, fill: '#6b7280' }} />
               <YAxis type="category" dataKey="type" tick={{ fontSize: 12, fill: '#374151' }} width={80} />
               <Tooltip formatter={(v) => [fmtEuro(v), 'Cost']} contentStyle={{ fontSize: 12 }} />
               <Bar dataKey="cost_eur" isAnimationActive={false}>
@@ -78,13 +81,14 @@ export default function Maintenance() {
 
 // Also used on the Equipment detail page
 export function WorkOrderTable({ rows, showAsset = true }) {
+  const showTechnician = rows.some((w) => w.technician) // Gold has no technician: the column only shows when there is one
   const columns = [
     { key: 'id', label: 'WO #', render: (w) => <span className="font-semibold text-brand">{w.id}</span> },
     showAsset && { key: 'asset', label: 'Asset', render: (w) => <Link to={`/equipment/${w.asset_id}`} className="hover:underline">{w.asset_id}</Link> },
     { key: 'title', label: 'Task', wrap: true },
     { key: 'type', label: 'Type' },
     { key: 'status', label: 'Status', render: (w) => <StatusBadge status={w.status} /> },
-    { key: 'technician', label: 'Technician' },
+    showTechnician && { key: 'technician', label: 'Technician' },
     { key: 'due', label: 'Due', render: (w) => fmtDate(w.due) },
     { key: 'downtime_h', label: 'Downtime', align: 'right', render: (w) => (w.downtime_h ? `${w.downtime_h} h` : '–') },
     { key: 'cost', label: 'Cost', align: 'right', render: (w) => fmtEuro(w.cost) },
