@@ -42,9 +42,23 @@ Client (Postman, app, agent UI) ──HTTPS + API key / JWT──► FastAPI
 ```bash
 pip install -e ".[dev]"
 cp .env.example .env               # fill in the Databricks values and an API key
-uvicorn app.api.main:app --reload      # Swagger UI: http://127.0.0.1:8000/docs
+uvicorn app.api.main:app --reload      # run from the repo root; Swagger UI: http://127.0.0.1:8000/docs
 ```
 3. Check `GET /ready` → `"gold": true`, then try the Postman collection.
+
+## Configuration
+The API reads environment variables or the `.env` in the working directory (run uvicorn from the
+repo root). The Databricks and Gold variables are the same ones the agent uses, so one `.env`
+serves both. There is no `PM_` prefix.
+
+| Variable | Used for |
+|---|---|
+| `DATABRICKS_HOST`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_TOKEN` | SQL warehouse connection (shared with the agent) |
+| `GOLD_CATALOG`, `GOLD_SCHEMA`, `GOLD_TABLE_PREFIX` | Table names `<catalog>.<schema>.<prefix>gold_<name>` (shared with the agent) |
+| `API_KEYS` | Comma-separated API keys for dev auth (required unless JWT is configured) |
+| `JWT_TENANT_ID`, `JWT_AUDIENCE`, `JWT_REQUIRED_ROLE` | Entra ID JWT for the deployed design (optional; role defaults to `PM.Reader`) |
+| `ENVIRONMENT` | `dev` (default) or `prod` |
+| `QUERY_TIMEOUT_SECONDS`, `QUERY_RETRIES` | Databricks query limits (defaults 30 and 2) |
 
 ## Connecting the agent
 Implement `answer_question(question, tools)` in `src/app/api/agent.py`. `tools` has
