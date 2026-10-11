@@ -80,13 +80,10 @@ Run on every plan before the judge LLM sees it. A plan is rejected for:
 | Tool | Status |
 |---|---|
 | `get_kpi` | **Real.** From `tools/kpi_tools.py`: governed KPI from the Gold table `gold_kpi_equipment_month`, calculated in Databricks. See [`tools/README.md`](tools/README.md). |
-| `get_sql_query` | Placeholder, returns only `{"equipment_id": ...}`. |
-| `get_mock_equipment_status` | **Mock** with hard-coded data, to be removed once the real detail tool is wired in. |
+| `query_kpi_table` | **Real.** From `tools/detail_tools.py`: an LLM writes one read-only SQL SELECT on the KPI table and its dimensions, a parser guardrail checks it, Databricks runs it (at most 200 rows, up to 3 attempts). |
 
 The planner and judge prompts are generated from `TOOLS` (`TOOL_DOCS`) and from `KPIS` (valid KPI
 names with definition and unit), so adding a tool or KPI updates the prompts automatically.
-
-`tools/detail_tools.py` (schema + guarded SQL tools) exists but is **not wired in yet**.
 
 ## Running it
 
@@ -98,8 +95,7 @@ answer = run("What was availability of equipment EQ-001 in 2026-01?")
 `run(question, approve=ask_on_console)` starts a graph run with a fresh `thread_id`,
 and when the graph pauses at the approval step it calls `approve(plan_text)` (default: a `[y/N]`
 prompt in the console) and resumes with the answer. For the API, pass an `approve` callback that
-returns the user's decision instead of reading from the console. `python -m app.agent.agent` runs
-the three `EXAMPLE_QUESTIONS` one after the other (each asks for plan approval).
+returns the user's decision instead of reading from the console.
 
 The graph is compiled with an in-memory checkpointer (`MemorySaver`), which `interrupt()` needs;
 state is lost on restart.
