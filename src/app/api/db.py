@@ -40,7 +40,8 @@ class GoldDB:
         """Full name of a Gold table, e.g. data2026acc123456.team3.test_gold_dim_site."""
         if name not in GOLD_TABLES:
             raise ValueError(f"{name} is not a Gold table")
-        return f"{self.settings.gold_schema}.{self.settings.gold_table_prefix}{name}"
+        s = self.settings
+        return f"{s.gold_catalog}.{s.gold_schema}.{s.gold_table_prefix}gold_{name}"
 
     def query(self, sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """Run a SELECT and return the rows as dictionaries."""
