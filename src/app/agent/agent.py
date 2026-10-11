@@ -10,21 +10,28 @@ import uuid
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Literal, TypedDict
 
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import tool
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_openai import AzureChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
 
+from app.agent.prompts.system_prompt import (
+    EXECUTOR_PROMPT,
+    JUDGE_PROMPT,
+    PLANNER_PROMPT,
+    SUMMARY_PROMPT,
+    format_kpi_docs,
+    format_tool_docs,
+)
+from app.agent.schemas import AssistantAnswer, Plan, PlanReview, State
 from app.agent.tools.detail_tools import (
-    TABLE,
     get_schema,
     make_detail_tool,
+    make_sql_writer,
     run_detail_sql,
 )
 from app.agent.tools.kpi_tools import KPIS, KpiRequest, get_kpi
@@ -76,109 +83,7 @@ def _since(start: float) -> float:
     return round(time.perf_counter() - start, 3)
 
 
-# ---------- Models ----------
-
-
-class PlanStep(BaseModel):
-    tool: str
-    args: dict
-    purpose: str
-
-
-class Plan(BaseModel):
-    approach: str
-    steps: list[PlanStep] = Field(max_length=4)
-
-
-class PlanReview(BaseModel):
-    verdict: Literal["approve", "revise", "reject"]
-    reasons: list[str]
-    feedback_for_planner: str
-
-
-class AssistantAnswer(BaseModel):
-    answer: str
-    evidence: list[str]
-    filters: dict
-    source_measure: str
-    limitations: list[str]
-
-
-# ---------- Tools ----------
-
-WRITER_PROMPT = (
-    f"You write ONE Databricks SQL SELECT on the table {TABLE}, joined to the dimension tables when names are needed, "
-    "that answers the user's question. Return only the SQL, no explanation. Read-only; only the tables described below. "
-    "Rows whose equipment_key, site_key or equipment_type_key is -1 are unknown members: always exclude them. "
-    "Month columns are the first day of the month as an integer yyyyMMdd (April 2026 = 20260401). "
-    "When a KPI is asked for, compute it with these formulas over the summed columns, never by averaging ratios:\n"
-    + "\n".join(f"  {name}: {k['formula']}" for name, k in KPIS.items())
-)
-
-
-def write_sql(question: str, schema: str, attempts: list[dict]) -> str:
-    """The LLM step of the detail tool's loop: SQL for the question, shown the table and every failed try so far."""
-    human = f"Question: {question}\n\n{schema}" + "".join(
-        f"\n\nPrevious attempt:\n{a['sql']}\nRejected: {a['error']}\nFix it." for a in attempts
-    )
-    return llm.invoke([SystemMessage(WRITER_PROMPT), HumanMessage(human)]).content  # llm is defined below, used at call time
-
-
-query_kpi_table = make_detail_tool(get_schema, write_sql, run_detail_sql)
-
-
-@tool
-def get_mock_equipment_status(equipment_id: str, site_id: str | None = None) -> dict:
-    """Return the current status, last maintenance date, number of open work orders and
-    30-day alarm count of one piece of equipment."""
-    # MOCK: hardcoded test data, remove once the real tools exist
-    return {
-        "equipment_id": equipment_id,
-        "site_id": site_id or "site1",
-        "status": "running",
-        "last_maintenance": "2026-09-15",
-        "open_work_orders": 2,
-        "alarm_count_30d": 7,
-    }
-
-
-TOOLS = {t.name: t for t in (get_kpi, query_kpi_table, get_mock_equipment_status)}  # approved allowlist
-
-# ---------- Prompts ----------
-
-TOOL_DOCS = "\n".join(
-    f"- {t.name}: {' '.join(t.description.split())} Arguments: {json.dumps(t.args)}"
-    for t in TOOLS.values()
-)
-
-PLANNER_PROMPT = (
-    "You plan read-only analytics for an industrial predictive-maintenance assistant. "
-    "Return a plan of at most 4 steps using ONLY these tools:\n"
-    f"{TOOL_DOCS}\n"
-    "Valid kpi_name values with their meaning:\n"
-    + "\n".join(f"  {name}: {k['definition']} ({k['unit']})" for name, k in KPIS.items())
-    + "\nKPI periods are whole months written YYYY-MM (start_month and end_month, both inclusive). "
-    "Use the most relevant tool(s) for the question and do not add steps it does not need. "
-    "Use the exact argument names above. Do not execute anything and do not invent data or arguments."
-)
-JUDGE_PROMPT = (
-    "You review a plan for a read-only maintenance assistant. These are the only approved tools "
-    f"and what they do:\n{TOOL_DOCS}\n"
-    "Approve only if the plan answers the question using these tools (a tool is suitable if its "
-    "description covers what the question asks), stays read-only and invents no data. Otherwise "
-    "return 'revise' with feedback_for_planner, or 'reject' if the question cannot be answered."
-)
-SUMMARY_PROMPT = (
-    "Summarize this analysis plan for a business user in 2-3 sentences. Describe only what "
-    "will be looked up and why, in business terms. No tool names, parameters or technical terms."
-)
-EXECUTOR_PROMPT = (
-    "Answer the question using ONLY the tool results provided. Never invent numbers. "
-    "Fill answer, evidence, filters, source_measure and limitations. "
-    "Mention missing or failed data in limitations."
-)
-
-# ---------- Steps ----------
+# ---------- LLM ----------
 
 # Every LLM call is bounded: at most (1 + LLM_MAX_RETRIES) attempts of LLM_TIMEOUT_SECONDS each. The client retries
 # connection errors, timeouts, 429 and 5xx with backoff; anything else (e.g. a 400) fails at once.
@@ -195,9 +100,25 @@ llm = AzureChatOpenAI(
 )
 
 
-def _ask(schema, system: str, human: str):
-    structured = llm.with_structured_output(schema, method="function_calling")
-    return structured.invoke([SystemMessage(system), HumanMessage(human)])
+def _ask(schema, prompt, **variables):
+    """Fill the chat prompt template and get a structured (Pydantic) answer from the LLM."""
+    return (prompt | llm.with_structured_output(schema, method="function_calling")).invoke(variables)
+
+
+# ---------- Tools ----------
+
+query_kpi_table = make_detail_tool(get_schema, make_sql_writer(llm), run_detail_sql)
+
+
+TOOLS = {t.name: t for t in (get_kpi, query_kpi_table)}  # approved allowlist
+
+# ---------- Prompt variables ----------
+
+# Shared by the planner and judge templates; the template text itself lives in prompts/system_prompt.py.
+TOOL_DOCS = format_tool_docs(TOOLS)
+KPI_DOCS = format_kpi_docs(KPIS)
+
+# ---------- Steps ----------
 
 
 def plan_text(question: str, p: Plan) -> str:
@@ -205,16 +126,13 @@ def plan_text(question: str, p: Plan) -> str:
     full = f"Approach: {p.approach}\n" + "\n".join(
         f"{i}. {s.tool}({json.dumps(s.args)}) - {s.purpose}" for i, s in enumerate(p.steps, 1)
     )
-    summary = llm.invoke([
-        SystemMessage(SUMMARY_PROMPT),
-        HumanMessage(f"Question: {question}\n\nPlan:\n{full}"),
-    ]).content
+    summary = (SUMMARY_PROMPT | llm).invoke({"question": question, "plan": full}).content
     return f"{full}\n-------------\n{summary}"
 
 
 def plan(question: str, feedback: str | None = None) -> Plan:
-    human = question if not feedback else f"{question}\n\nReviewer feedback to address: {feedback}"
-    return _ask(Plan, PLANNER_PROMPT, human)
+    note = f"\n\nReviewer feedback to address: {feedback}" if feedback else ""
+    return _ask(Plan, PLANNER_PROMPT, tool_docs=TOOL_DOCS, kpi_docs=KPI_DOCS, question=question, feedback_note=note)
 
 
 def check_plan(p: Plan) -> list[str]:
@@ -241,7 +159,7 @@ def check_plan(p: Plan) -> list[str]:
 
 
 def judge_plan(question: str, p: Plan) -> PlanReview:
-    return _ask(PlanReview, JUDGE_PROMPT, f"Question: {question}\n\nPlan: {p.model_dump_json()}")
+    return _ask(PlanReview, JUDGE_PROMPT, tool_docs=TOOL_DOCS, question=question, plan=p.model_dump_json())
 
 
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")  # 12, 1,234.5, 0.93
@@ -285,9 +203,8 @@ def unverified_numbers(answer: AssistantAnswer, results: list) -> list[str]:
 
 def execute(question: str, p: Plan, run_id: str = "-") -> AssistantAnswer:
     limitations, results = [], []
-    messages = [SystemMessage(EXECUTOR_PROMPT), HumanMessage(question)]
     calls = [{"name": s.tool, "args": s.args, "id": f"step{i}"} for i, s in enumerate(p.steps)]
-    messages.append(AIMessage(content="", tool_calls=calls))  # ToolMessages must answer tool_calls
+    tool_messages = [AIMessage(content="", tool_calls=calls)]  # ToolMessages must answer tool_calls
     for call in calls:
         start = time.perf_counter()
         try:
@@ -299,9 +216,9 @@ def execute(question: str, p: Plan, run_id: str = "-") -> AssistantAnswer:
             log_event("tool_call", run_id, logging.WARNING, tool=call["name"], args=call["args"], ok=False,
                       error=str(e), duration_s=_since(start))
         results.append(result)
-        messages.append(ToolMessage(json.dumps(result, default=str), tool_call_id=call["id"]))
+        tool_messages.append(ToolMessage(json.dumps(result, default=str), tool_call_id=call["id"]))
     start = time.perf_counter()
-    answer = llm.with_structured_output(AssistantAnswer, method="function_calling").invoke(messages)
+    answer = _ask(AssistantAnswer, EXECUTOR_PROMPT, question=question, tool_messages=tool_messages)
     answer.source_measure = ", ".join(  # traceable, not LLM-written; the detail tool also shows the SQL it ran
         c["name"] + (f" [{r['sql']}]" if isinstance(r, dict) and "sql" in r else "") for c, r in zip(calls, results)
     )
@@ -323,18 +240,6 @@ def _refuse(reason: str) -> AssistantAnswer:
 # ---------- Graph ----------
 
 MAX_REVISIONS = 2
-
-
-class State(TypedDict, total=False):
-    question: str
-    run_id: str  # correlation ID of this question, on every log line
-    plan: Plan
-    feedback: str | None
-    revisions: int
-    verdict: str  # approve | revise | reject | declined
-    reasons: list[str]
-    plan_text: str  # full plan + business summary shown to the user
-    answer: AssistantAnswer
 
 
 def planner_node(s: State) -> State:
@@ -421,25 +326,3 @@ def run(question: str, approve=ask_on_console) -> AssistantAnswer:
         raise
     log_event("run_finished", run_id, verdict=result.get("verdict"), duration_s=_since(start))
     return result["answer"]
-
-
-EXAMPLE_QUESTIONS = [
-    # one KPI, whole fleet, one month range -> get_kpi(kpi_name="availability", ...)
-    "What was the fleet availability between 2026-04 and 2026-06?",
-    # KPI + equipment type filter
-    "What is the MTTR of the Centrifugal Pump equipment from 2026-03 to 2026-09?",
-    # KPI + equipment filter, single month
-    "How many unplanned failures did equipment EQ-10001 have in 2026-07?",
-    # "show me" data, a KPI broken down per month -> query_kpi_table (LLM-written SQL on the KPI table)
-    "Show me the MTTR per month from 2026-03 to 2026-06",
-    # "show me" data, ranking with names from the dimensions and a LIMIT 5 -> query_kpi_table
-    "Show me the 5 pieces of equipment with the most unplanned downtime hours in 2026-04",
-]
-
-
-if __name__ == "__main__":
-    for question in EXAMPLE_QUESTIONS:
-        print(f"\n=== {question}")
-        result = run(question)
-        print(result.answer)
-        print(f"[source] {result.source_measure}")  # for the detail tool this is the SQL that ran

@@ -2,7 +2,8 @@
 an LLM writes SQL from the table descriptions, a parser guardrail accepts only a single read-only SELECT on the tables of
 TABLES (the KPI table and its dimensions, so results can show names instead of keys) capped at 200 rows, Databricks runs
 it, and any rejection or database error goes back to the LLM for a rewrite (at most
-MAX_ATTEMPTS). There is no LLM code here: the caller passes in `write_sql`. The Databricks side (`get_schema`,
+MAX_ATTEMPTS). The LLM itself is never created here: the caller passes it to `make_sql_writer` (or passes its own
+`write_sql`, as the unit tests do). The Databricks side (`get_schema`,
 `run_detail_sql`) is at the bottom and only reads kpi_tools' `_table`. The two atomic tools of `make_kpi_tools` are the
 same steps without the loop."""
 
@@ -14,7 +15,8 @@ import sqlglot
 from langchain_core.tools import tool
 from sqlglot import exp
 
-from app.agent.tools.kpi_tools import _table
+from app.agent.prompts.system_prompt import WRITER_PROMPT, format_kpi_formulas
+from app.agent.tools.kpi_tools import KPIS, _table
 
 MAX_ROWS = 200
 MAX_ATTEMPTS = 3
@@ -100,6 +102,18 @@ def query_with_retries(question: str, get_schema, write_sql, run_sql, max_attemp
             error = f"Guardrail rejected query: {error}"
         attempts.append({"sql": sql, "error": error})
     return {"error": f"No valid query after {max_attempts} attempts.", "attempts": attempts}
+
+
+def make_sql_writer(llm):
+    """Build `write_sql(question, schema, attempts) -> str`, the LLM step of the loop: SQL for the question, shown the
+    table and every failed try so far. `llm` is any LangChain chat model."""
+    chain = WRITER_PROMPT.partial(table=TABLE, kpi_formulas=format_kpi_formulas(KPIS)) | llm
+
+    def write_sql(question: str, schema: str, attempts: list[dict]) -> str:
+        failed = "".join(f"\n\nPrevious attempt:\n{a['sql']}\nRejected: {a['error']}\nFix it." for a in attempts)
+        return chain.invoke({"question": question, "schema": schema, "attempts": failed}).content
+
+    return write_sql
 
 
 def make_detail_tool(get_schema, write_sql, run_sql):
