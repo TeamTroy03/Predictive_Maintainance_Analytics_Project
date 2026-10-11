@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+/* Design tokens taken from the AssetPulse DESIGN.md */
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --color-brand: #7e00c9;
+  --color-brand-light: #f3e6ff;
+  --color-canvas: #f5f5f7;
+  --color-line: #e5e5e5;
+  --color-ok: #00a86b;
+  --color-warn: #c98a00;
+  --color-crit: #e5384f;
+  --color-off: #8c8c8c;
+}
+
+body {
+  background: var(--color-canvas);
+  color: #1b1b1e;
+  font-family: var(--font-sans);
+}
+
+/* Numbers don't jump around when values change */
+.num {
+  font-variant-numeric: tabular-nums;
+}
