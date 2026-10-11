@@ -129,3 +129,21 @@ class AssistantAnswer(BaseModel):
     evidence: list[ToolEvidence] = Field(description="Every tool call, its arguments and result")
     grounded: bool = Field(description="True if at least one tool returned data")
     limitations: list[str]
+    filters: dict[str, Any] = Field(default_factory=dict, description="Filters the agent applied")
+    source_measure: str = Field("", description="Tools (and SQL for detail queries) the answer comes from")
+
+
+class AssistantApproval(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"examples": [{"run_id": "b3f1c0de-0000-4000-8000-000000000000", "approved": True}]},
+    )
+    run_id: str = Field(pattern=r"^[A-Za-z0-9._-]{1,64}$", description="run_id returned by POST /assistant/query")
+    approved: bool = Field(description="True runs the plan, False declines it")
+
+
+class AssistantResponse(BaseModel):
+    status: Literal["awaiting_approval", "answered"]
+    run_id: str = Field(description="Also the correlation ID of the query request; send it to /assistant/approve")
+    plan: str | None = Field(None, description="Plan waiting for approval (status awaiting_approval)")
+    result: AssistantAnswer | None = Field(None, description="The answer (status answered)")

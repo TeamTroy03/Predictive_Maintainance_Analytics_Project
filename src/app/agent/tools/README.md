@@ -7,7 +7,7 @@ in the `TOOLS` allowlist in [`../agent.py`](../README.md).
 | File | Tool(s) | Status |
 |---|---|---|
 | `kpi_tools.py` | `get_kpi` | Implemented, queries Gold on Databricks (tested live, see Tests) |
-| `detail_tools.py` | `get_kpi_schema`, `validate_and_format_kpi_query` | Implemented and unit-tested, **not wired into `agent.py`** |
+| `detail_tools.py` | `query_kpi_table` (wired into `agent.py`); `get_kpi_schema`, `validate_and_format_kpi_query` (atomic variant, **not** wired) | Implemented; queries Gold on Databricks. Guardrail unit-tested (one test is stale, see below) |
 
 ## `kpi_tools.py`: `get_kpi`
 
@@ -38,7 +38,8 @@ Unknown extra arguments are rejected (`extra="forbid"`). The same `KpiRequest` i
 ### The KPIs (`KPIS`)
 
 `KPIS` is the single catalogue: name → `formula`, `unit`, `definition`, `limitations` (and an optional
-`note`). The formulas are copied from `KPI_FORMULAS` in the Gold notebook. The additive columns of
+`note`). The formulas are copied from `KPI_FORMULAS` in the Gold notebook (a copy of it is in
+`.claude/reference/gold_layer.ipynb`; the notebook is not in `databricks/`). The additive columns of
 `gold_kpi_equipment_month` are summed over the selected rows and then the formula is applied, so a
 ratio over several months or equipment is a ratio of sums, not an average of ratios.
 
@@ -130,37 +131,51 @@ running a query.
 The tests live in a dot-folder under `src/`, so run them by path as shown. Not covered yet: an offline unit test of `compute_kpi` with a stub `run` (the function accepts one, e.g.
 `compute_kpi(request, run=fake)`), so CI without Databricks could check the generated SQL and params.
 
-## `detail_tools.py`: guarded SQL tools (not wired in yet)
+## `detail_tools.py`: `query_kpi_table` (guarded SQL, wired into `agent.py`)
 
-`make_kpi_tools(get_schema)` returns two atomic tools so the planner can select them, the judge can
-review the calls and the executor LLM writes the SQL in between (there is no LLM inside the tools):
+For "show me" questions that `get_kpi` cannot answer (lists, breakdowns per month, rankings with equipment,
+type and site names). The tool takes only a plain-language `question`; **an LLM writes the SQL, but code checks
+it before anything runs**:
 
 ```
-get_kpi_schema()                         ─► get_schema() as text: columns, types, comments, sample rows
-   (the LLM writes a Databricks SELECT FROM kpi_table from that text)
-validate_and_format_kpi_query(sql_query) ─► strips ``` fences
-                                         ─► check_sql   sqlglot parse: ONE statement, a SELECT only; rejects
-                                                        INSERT/UPDATE/DELETE/MERGE, CREATE/DROP/ALTER,
-                                                        SELECT ... INTO, stacked statements, other commands
-                                            limit_rows  keeps a LIMIT <= 200, replaces a bigger or missing one
-                                         ─► {"valid": True, "sql": "..."}  or  {"error": "Guardrail rejected query: ..."}
+query_kpi_table(question)
+   └─► query_with_retries   (at most MAX_ATTEMPTS = 3 tries)
+         1. describe(get_schema())   RULES + per table: columns, types, comments, SAMPLE_ROWS = 3 sample rows
+         2. write_sql(question, schema, failed tries)   LLM step, built by make_sql_writer(llm) from WRITER_PROMPT
+         3. clean_sql      drops ``` fences
+         4. check_sql      sqlglot parse: ONE statement, a SELECT only (no INSERT/UPDATE/DELETE/MERGE,
+                           CREATE/DROP/ALTER, SELECT ... INTO, stacked statements, other commands, also inside
+                           subqueries/CTEs) and only the tables of TABLES
+         5. limit_rows     keeps a LIMIT <= 200 (MAX_ROWS), replaces a bigger or missing one
+         6. run_detail_sql maps the table names to the real Gold tables and runs it on Databricks
+         a rejection or a Databricks error goes back to step 2 as "Previous attempt ... Rejected: ... Fix it."
+   └─► {"sql", "rows", "row_count", "attempts"}  or  {"error": "No valid query after 3 attempts.", "attempts": [...]}
 ```
 
-It does **not** run anything and contains no Databricks code. It only receives a `get_schema` function.
-Covered by `tests/unit/test_detail_tools.py`.
+- **Allowed tables (`TABLES`)**: `kpi_table` (= `gold_kpi_equipment_month`), `dim_equipment`,
+  `dim_equipment_type`, `dim_site`. Any other table is rejected by `check_sql`. Unknown members (`-1` keys) are
+  excluded by the writer prompt and the rules text.
+- `get_schema()` reads each table once per process (`@cache`: restart to see new columns) with
+  `DESCRIBE TABLE` and a `SELECT ... LIMIT 3` sample. `run_rows` returns every row as a dict (Decimal → float).
+- The LLM is never created in this file: the caller passes it to `make_sql_writer` (`agent.py` does), or passes
+  its own `write_sql`, which is how the unit tests run without an LLM.
+- The parser check is not the only protection: the token should have `SELECT` rights only on the Gold tables.
+- The agent shows the SQL that ran in `source_measure`, and `agent.execute` checks the numbers in the answer
+  against the returned rows.
 
-### Open items before it can be used
+### The atomic variant (`make_kpi_tools`, not wired)
 
-- **`kpi_tools.py` does not provide `get_schema()` or `run_sql()`** (the earlier plan for this file).
-  It currently has only `get_kpi` and `run_query`. To use `detail_tools` we still need:
-  - `get_schema() -> {"columns": [{"name", "type", "comment"?}], "sample"?: [row dict]}` for the table
-    exposed as `kpi_table`, cached (Unity Catalog `columns[i].name/type_text/comment`, plus a
-    `SELECT ... LIMIT 5` sample);
-  - something that **runs** the SQL from `validate_and_format_kpi_query` and returns rows as dicts.
-    It must start with `check_sql` + `limit_rows` so no unchecked SQL can reach Databricks, resolve the
-    name `kpi_table` to the real Gold table, and use a token with `SELECT`-only rights. Note that
-    `run_query` returns a single row and accepts no row limit, so it is not enough for this.
-- Register the tools: `get_kpi_schema, validate_and_format_kpi_query = make_kpi_tools(get_schema)`, then add
-  them to `TOOLS` in `agent.py` (and replace the placeholder tools there).
-- The docstrings in `detail_tools.py` still mention `execute_kpi_query` and a `run_sql` argument, which no
-  longer exist.
+`make_kpi_tools(get_schema)` returns `get_kpi_schema` (the `describe()` text of all tables) and
+`validate_and_format_kpi_query(sql_query)` (`clean_sql` + `check_sql` + `limit_rows`, returns
+`{"valid": True, "sql": ...}` or `{"error": "Guardrail rejected query: ..."}`; it runs nothing). They are the same
+steps without the retry loop, for an LLM that loops by itself. **`agent.py` does not use them**; its `TOOLS`
+are `get_kpi` and `query_kpi_table`.
+
+### Tests
+
+`tests/unit/test_detail_tools.py` covers `check_sql` (rejected writes, accepted SELECT), `limit_rows` and the
+atomic tools, with no Databricks and no LLM. **`test_get_kpi_schema` currently fails**: it passes the old
+single-table shape (`{"columns": [...], "sample": [...]}`) while `get_schema()` now returns
+`{table name: {"columns", "sample"}}`. Not covered yet: `query_with_retries` with a fake `write_sql`/`run_sql`,
+the table allowlist in `check_sql`, and `run_detail_sql`'s table renaming. The live path is exercised by
+`tests/integration/test_assistant_live.py` only when the planner picks this tool.

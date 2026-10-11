@@ -41,3 +41,4 @@ class State(TypedDict, total=False):
     reasons: list[str]
     plan_text: str  # full plan + business summary shown to the user
     answer: AssistantAnswer
+    trace: list[dict]  # one {tool, args, ok, result} per executed step, for the API's evidence
