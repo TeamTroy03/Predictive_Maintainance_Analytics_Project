@@ -10,6 +10,8 @@ venv/
 .ruff_cache/
 .coverage
 htmlcov/
+graphify-out/
+
 
 # Secrets: never commit (§6.6, §6.8)
 .env
