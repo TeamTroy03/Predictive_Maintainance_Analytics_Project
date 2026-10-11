@@ -21,6 +21,12 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field, ValidationError
 
+from app.agent.tools.detail_tools import (
+    TABLE,
+    get_schema,
+    make_detail_tool,
+    run_detail_sql,
+)
 from app.agent.tools.kpi_tools import KPIS, KpiRequest, get_kpi
 
 load_dotenv()
@@ -98,13 +104,27 @@ class AssistantAnswer(BaseModel):
     limitations: list[str]
 
 
-# ---------- Tools (placeholders) ----------
+# ---------- Tools ----------
 
-@tool
-def get_sql_query(equipment_id: str) -> dict:
-    """Return metadata for one piece of equipment."""
-    # TODO: replace with Gold/semantic layer call
-    return {"equipment_id": equipment_id}
+WRITER_PROMPT = (
+    f"You write ONE Databricks SQL SELECT on the table {TABLE}, joined to the dimension tables when names are needed, "
+    "that answers the user's question. Return only the SQL, no explanation. Read-only; only the tables described below. "
+    "Rows whose equipment_key, site_key or equipment_type_key is -1 are unknown members: always exclude them. "
+    "Month columns are the first day of the month as an integer yyyyMMdd (April 2026 = 20260401). "
+    "When a KPI is asked for, compute it with these formulas over the summed columns, never by averaging ratios:\n"
+    + "\n".join(f"  {name}: {k['formula']}" for name, k in KPIS.items())
+)
+
+
+def write_sql(question: str, schema: str, attempts: list[dict]) -> str:
+    """The LLM step of the detail tool's loop: SQL for the question, shown the table and every failed try so far."""
+    human = f"Question: {question}\n\n{schema}" + "".join(
+        f"\n\nPrevious attempt:\n{a['sql']}\nRejected: {a['error']}\nFix it." for a in attempts
+    )
+    return llm.invoke([SystemMessage(WRITER_PROMPT), HumanMessage(human)]).content  # llm is defined below, used at call time
+
+
+query_kpi_table = make_detail_tool(get_schema, write_sql, run_detail_sql)
 
 
 @tool
@@ -122,7 +142,7 @@ def get_mock_equipment_status(equipment_id: str, site_id: str | None = None) -> 
     }
 
 
-TOOLS = {t.name: t for t in (get_kpi, get_sql_query, get_mock_equipment_status)}  # approved allowlist
+TOOLS = {t.name: t for t in (get_kpi, query_kpi_table, get_mock_equipment_status)}  # approved allowlist
 
 # ---------- Prompts ----------
 
@@ -225,8 +245,13 @@ def judge_plan(question: str, p: Plan) -> PlanReview:
 
 
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")  # 12, 1,234.5, 0.93
-# not measurements, ignored in the answer: dates/months (2026-04), times, equipment IDs (EQ-10001) and years
-_IDENTIFIERS = re.compile(r"\b\d{4}-\d{2}(?:-\d{2})?\b|\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?|\b[A-Za-z]+-\d+\b|\b20\d{2}\b(?!\.\d)")
+# not measurements, ignored in the answer: dates/months (2026-04), times, equipment IDs (EQ-10001, CDM-B0445), years and
+# list numbers ("1. Pump", only at a line start or after : ; ,)
+_IDENTIFIERS = re.compile(
+    r"\b\d{4}-\d{2}(?:-\d{2})?\b|\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?|\b[A-Za-z]+-[A-Za-z]*\d+\b|\b20\d{2}\b(?!\.\d)"
+    r"|(?:^|(?<=[:;,]\s))\d{1,2}[.)](?=\s)",
+    re.MULTILINE,
+)
 
 
 def _values(x) -> list[float]:
@@ -277,7 +302,9 @@ def execute(question: str, p: Plan, run_id: str = "-") -> AssistantAnswer:
         messages.append(ToolMessage(json.dumps(result, default=str), tool_call_id=call["id"]))
     start = time.perf_counter()
     answer = llm.with_structured_output(AssistantAnswer, method="function_calling").invoke(messages)
-    answer.source_measure = ", ".join(c["name"] for c in calls)  # traceable, not LLM-written
+    answer.source_measure = ", ".join(  # traceable, not LLM-written; the detail tool also shows the SQL it ran
+        c["name"] + (f" [{r['sql']}]" if isinstance(r, dict) and "sql" in r else "") for c, r in zip(calls, results)
+    )
     answer.limitations += limitations
     if lines := [f"{c['name']}: value={r['value']} {r.get('unit', '')}, rows={r.get('row_count')}, as of {r.get('as_of_ts')}"
                  for c, r in zip(calls, results) if isinstance(r, dict) and "value" in r]:
@@ -403,10 +430,16 @@ EXAMPLE_QUESTIONS = [
     "What is the MTTR of the Centrifugal Pump equipment from 2026-03 to 2026-09?",
     # KPI + equipment filter, single month
     "How many unplanned failures did equipment EQ-10001 have in 2026-07?",
+    # "show me" data, a KPI broken down per month -> query_kpi_table (LLM-written SQL on the KPI table)
+    "Show me the MTTR per month from 2026-03 to 2026-06",
+    # "show me" data, ranking with names from the dimensions and a LIMIT 5 -> query_kpi_table
+    "Show me the 5 pieces of equipment with the most unplanned downtime hours in 2026-04",
 ]
 
 
 if __name__ == "__main__":
     for question in EXAMPLE_QUESTIONS:
         print(f"\n=== {question}")
-        print(run(question).answer)
+        result = run(question)
+        print(result.answer)
+        print(f"[source] {result.source_measure}")  # for the detail tool this is the SQL that ran
