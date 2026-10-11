@@ -1,25 +1,55 @@
-# FastAPI integration layer
 
-**Spec:** §6.7 REST APIs, FastAPI and Azure Integration · **Owner:** @participant3
-**Deliverable:** FastAPI integration → `docs/fastapi_integration.md`
+FastAPI service over the Databricks **Gold** tables. It exposes governed KPIs, two domain
+endpoints, and the endpoint of the AI agent, which may only use approved data functions.
 
-**Acceptance condition (§6.7 / §7):** validated endpoints with Pydantic request/response models,
-consistent error responses, OpenAPI docs at `/docs`, API security, and executable request examples
-in `postman/`. The API is connected end to end with Gold / the semantic layer and the LangChain tools;
-any mocked cloud dependency is clearly documented.
+```
+Client (Postman, app, agent UI) ──HTTPS + API key / JWT──► FastAPI
+   /analytics, /equipment, /work-orders ──► services.py ──► db.py ──► Databricks SQL warehouse ──► Gold
+   /assistant/query ──► agent.py (your agent) ──► AgentTools = the same services
+```
 
-## Minimum endpoints
+## Files
+| File | Role |
+|---|---|
+| `src/app/api/main.py` | Creates the app: middleware, error handlers, routes |
+| `src/app/api/routes.py` | All endpoints |
+| `src/app/api/schemas.py` | Pydantic request/response models (validation + Swagger) |
+| `src/app/api/services.py` | Queries on the Gold tables (KPIs, equipment health, overdue list) |
+| `src/app/api/kpis.py` | The 12 KPI formulas (same as Gold cell 3 and the DAX measures) |
+| `src/app/api/db.py` | Databricks SQL warehouse connection: timeout, retries, bound parameters |
+| `src/app/api/agent.py` | **Connection point for the agent** (`answer_question`) and its tools |
+| `src/app/api/security.py` | API key (dev) and Entra ID JWT (deployed) |
+| `src/app/api/errors.py` | One JSON error format for every failure |
+| `src/app/api/observability.py` | Correlation IDs and JSON logs (secrets redacted) |
+| `src/app/api/config.py` | Settings from environment variables (Key Vault in Azure) |
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/health` | Liveness (stub exists in `main.py`) |
-| GET | `/ready` | Readiness: dependencies reachable |
-| POST | `/analytics/query` | Approved KPI / aggregate queries over Gold |
-| POST | `/assistant/query` | LangChain Core assistant (see `src/app/agent/`) |
-| _TBD_ | domain endpoint | e.g. `GET /equipment/{equipment_id}/health` |
+## Endpoints
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/health` | – | Liveness |
+| GET | `/ready` | – | Readiness: Databricks reachable and auth configured (503 if not) |
+| GET | `/kpis` | ✔ | The 12 governed KPIs |
+| POST | `/analytics/query` | ✔ | KPIs with group_by (site, equipment_type, equipment, month) and filters |
+| GET | `/equipment/{id}/health` | ✔ | One asset's KPIs, latest alarms, open work orders |
+| GET | `/work-orders/overdue` | ✔ | Overdue work orders, paginated |
+| POST | `/assistant/query` | ✔ | Question in natural language, answered by the agent |
 
-## Cross-cutting requirements
+## Run
+1. In Databricks: **SQL Warehouses → your warehouse → Connection details** gives the host and
+   HTTP path; **User settings → Developer → Access tokens** gives a token. The warehouse must be
+   able to read the `test_gold_*` tables (Unity Catalog `SELECT` on schema `team3`).
+2. Then:
+```bash
+pip install -e ".[dev]"
+cp .env.example .env               # fill in the Databricks values and an API key
+uvicorn app.api.main:app --reload      # Swagger UI: http://127.0.0.1:8000/docs
+```
+3. Check `GET /ready` → `"gold": true`, then try the Postman collection.
 
-- API key auth in dev; OAuth2 bearer / JWT validation in the deployed design
-- Correlation ID per request; structured logs with no secrets or sensitive data
-- External calls: timeouts, bounded retries, pagination and rate-limit handling
+## Connecting the agent
+Implement `answer_question(question, tools)` in `src/app/api/agent.py`. `tools` has
+`get_kpis`, `get_equipment_health` and `list_overdue_work_orders`: wrap them as LangChain
+tools, let the model call them, and return an `AssistantAnswer` with the answer and the
+evidence of each tool call. Until then `/assistant/query` returns 503 `assistant_unavailable`.
+
+

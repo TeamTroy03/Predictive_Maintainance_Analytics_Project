@@ -12,8 +12,8 @@ from typing import Any
 
 from databricks import sql as databricks_sql
 
-from app.config import Settings
-from app.errors import ApiError
+from app.api.config import Settings
+from app.api.errors import ApiError
 
 logger = logging.getLogger("api.db")
 

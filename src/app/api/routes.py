@@ -6,12 +6,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query, Request
 from fastapi.responses import JSONResponse
 
-from app.agent import AgentTools, answer_question
-from app.config import Settings, get_settings
-from app.db import GoldDB
-from app.errors import ERROR_RESPONSES, ErrorResponse
-from app.kpis import KPI_DEFINITIONS
-from app.schemas import (
+from app.api.agent import AgentTools, answer_question
+from app.api.config import Settings, get_settings
+from app.api.db import GoldDB
+from app.api.errors import ERROR_RESPONSES, ErrorResponse
+from app.api.kpis import KPI_DEFINITIONS
+from app.api.schemas import (
     AnalyticsQuery,
     AnalyticsResult,
     AssistantAnswer,
@@ -22,8 +22,8 @@ from app.schemas import (
     Readiness,
     WorkOrderPage,
 )
-from app.security import require_auth
-from app.services import equipment_health, overdue_work_orders, run_kpis
+from app.api.security import require_auth
+from app.api.services import equipment_health, overdue_work_orders, run_kpis
 
 
 def get_db(request: Request) -> GoldDB:

@@ -3,10 +3,10 @@
 from decimal import Decimal
 from typing import Any
 
-from app.db import GoldDB
-from app.errors import ApiError
-from app.kpis import KPI_DEFINITIONS, Kpi
-from app.schemas import (
+from app.api.db import GoldDB
+from app.api.errors import ApiError
+from app.api.kpis import KPI_DEFINITIONS, Kpi
+from app.api.schemas import (
     AnalyticsQuery,
     AnalyticsResult,
     EquipmentHealth,

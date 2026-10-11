@@ -1,7 +1,0 @@
-{
-  "name": "Team 3 - local",
-  "values": [
-    { "key": "baseUrl", "value": "http://localhost:8000", "enabled": true },
-    { "key": "apiKey", "value": "", "type": "secret", "enabled": true }
-  ]
-}

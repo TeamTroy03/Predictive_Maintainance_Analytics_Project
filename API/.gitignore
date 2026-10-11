@@ -1,9 +1,0 @@
-.env
-__pycache__/
-.venv/
-.ruff_cache/
-
-.env
-.venv/
-__pycache__/
-.ruff_cache/

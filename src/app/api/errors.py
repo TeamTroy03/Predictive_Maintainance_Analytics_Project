@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException
 
-from app.observability import correlation_id
+from app.api.observability import correlation_id
 
 
 class ErrorBody(BaseModel):

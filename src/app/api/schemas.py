@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
 
-from app.kpis import Kpi
+from app.api.kpis import Kpi
 
 
 def _upper(value: Any) -> Any:

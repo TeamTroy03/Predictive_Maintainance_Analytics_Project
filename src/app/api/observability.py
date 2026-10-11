@@ -46,7 +46,7 @@ def setup_logging() -> None:
 
 
 async def correlation_middleware(request: Request, call_next):  # noqa: ANN001, ANN201
-    from app.errors import error_response  # local import avoids a circular import
+    from app.api.errors import error_response  # local import avoids a circular import
 
     incoming = request.headers.get("X-Correlation-ID", "")
     token = correlation_id.set(incoming if _SAFE_ID.match(incoming) else str(uuid.uuid4()))

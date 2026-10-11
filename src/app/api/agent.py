@@ -16,9 +16,9 @@ the chat model, execute the tool calls and record each call in `evidence`.
 For errors raise ApiError(429, "rate_limited", ...) or ApiError(503, "assistant_unavailable", ...).
 """
 
-from app.db import GoldDB
-from app.errors import ApiError
-from app.schemas import (
+from app.api.db import GoldDB
+from app.api.errors import ApiError
+from app.api.schemas import (
     AnalyticsQuery,
     AnalyticsResult,
     AssistantAnswer,
@@ -26,7 +26,7 @@ from app.schemas import (
     Priority,
     WorkOrderPage,
 )
-from app.services import equipment_health, overdue_work_orders, run_kpis
+from app.api.services import equipment_health, overdue_work_orders, run_kpis
 
 
 class AgentTools:

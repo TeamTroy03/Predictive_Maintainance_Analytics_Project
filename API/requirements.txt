@@ -1,6 +1,0 @@
-fastapi==0.143.0
-uvicorn[standard]==0.54.0
-pydantic-settings==2.15.0
-databricks-sql-connector>=3.4,<5
-PyJWT[crypto]==2.7.0
-# The agent team adds its own packages here, e.g. langchain-core and langchain-openai
