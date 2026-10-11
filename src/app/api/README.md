@@ -5,7 +5,7 @@ endpoints, and the endpoint of the AI agent, which may only use approved data fu
 ```
 Client (Postman, app, agent UI) ──HTTPS + API key / JWT──► FastAPI
    /analytics, /equipment, /work-orders ──► services.py ──► db.py ──► Databricks SQL warehouse ──► Gold
-   /assistant/query ──► agent.py (your agent) ──► AgentTools = the same services
+   /assistant/query, /assistant/approve ──► agent.py (adapter) ──► app.agent.agent ──► get_kpi / detail tool ──► Gold
 ```
 
 ## Files
@@ -17,7 +17,7 @@ Client (Postman, app, agent UI) ──HTTPS + API key / JWT──► FastAPI
 | `src/app/api/services.py` | Queries on the Gold tables (KPIs, equipment health, overdue list) |
 | `src/app/api/kpis.py` | The 12 KPI formulas (same as Gold cell 3 and the DAX measures) |
 | `src/app/api/db.py` | Databricks SQL warehouse connection: timeout, retries, bound parameters |
-| `src/app/api/agent.py` | **Connection point for the agent** (`answer_question`) and its tools |
+| `src/app/api/agent.py` | Adapter to the agent: `start_question`, `approve_run`, error and answer mapping |
 | `src/app/api/security.py` | API key (dev) and Entra ID JWT (deployed) |
 | `src/app/api/errors.py` | One JSON error format for every failure |
 | `src/app/api/observability.py` | Correlation IDs and JSON logs (secrets redacted) |
@@ -32,7 +32,8 @@ Client (Postman, app, agent UI) ──HTTPS + API key / JWT──► FastAPI
 | POST | `/analytics/query` | ✔ | KPIs with group_by (site, equipment_type, equipment, month) and filters |
 | GET | `/equipment/{id}/health` | ✔ | One asset's KPIs, latest alarms, open work orders |
 | GET | `/work-orders/overdue` | ✔ | Overdue work orders, paginated |
-| POST | `/assistant/query` | ✔ | Question in natural language, answered by the agent |
+| POST | `/assistant/query` | ✔ | Step 1: question in natural language; returns the agent's plan awaiting approval |
+| POST | `/assistant/approve` | ✔ | Step 2: approve or decline the plan; returns the answer |
 
 ## Run
 1. In Databricks: **SQL Warehouses → your warehouse → Connection details** gives the host and
@@ -60,10 +61,29 @@ serves both. There is no `PM_` prefix.
 | `ENVIRONMENT` | `dev` (default) or `prod` |
 | `QUERY_TIMEOUT_SECONDS`, `QUERY_RETRIES` | Databricks query limits (defaults 30 and 2) |
 
-## Connecting the agent
-Implement `answer_question(question, tools)` in `src/app/api/agent.py`. `tools` has
-`get_kpis`, `get_equipment_health` and `list_overdue_work_orders`: wrap them as LangChain
-tools, let the model call them, and return an `AssistantAnswer` with the answer and the
-evidence of each tool call. Until then `/assistant/query` returns 503 `assistant_unavailable`.
+## Assistant (agent)
+The agent (`src/app/agent/agent.py`) plans, reviews its plan, and **pauses until a human approves it**
+before any tool runs, so the assistant has two steps:
+
+1. `POST /assistant/query` `{"question": "..."}` → `status: "awaiting_approval"`, the `plan` and a `run_id`.
+   (If the plan is rejected as out of scope nothing runs and the response is already `status: "answered"`
+   with the reason in `limitations`.)
+2. `POST /assistant/approve` `{"run_id": "...", "approved": true}` → `status: "answered"` with the
+   `result` (answer, evidence per tool call, grounded, limitations, filters, source_measure).
+   `approved: false` declines the plan. Errors: 404 `unknown_run`, 409 `run_not_pending`, 429 `rate_limited`,
+   503 `assistant_unavailable`.
+
+Things to know:
+- The `run_id` is the correlation ID of the query request (send your own `X-Correlation-ID` to choose it;
+  a reused ID gets a fresh one). Send `X-Correlation-ID: <run_id>` on the approve call to trace both steps,
+  and find the agent's log lines with that ID in `src/app/agent/.log/agent.log`.
+- The agent needs `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT_NAME` and
+  `OPENAI_API_VERSION`. It is imported on the first assistant call, so the API starts without them and the
+  assistant answers 503 until they are set.
+- A pending plan lives in memory (`MemorySaver`): run **one uvicorn worker**; a restart loses pending plans.
+- **Client timeouts:** each question makes several sequential LLM calls (plan, review, summary, answer, and up
+  to 2 plan revisions), each limited by `LLM_TIMEOUT_SECONDS` (60) with `LLM_MAX_RETRIES` (2) retries. Typical
+  time is tens of seconds, the worst case is minutes. Use a client timeout of about 300 s for both assistant
+  calls: Postman Settings → Request timeout, `newman --timeout-request 300000`, `curl --max-time 300`.
 
 

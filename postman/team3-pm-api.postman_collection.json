@@ -1,7 +1,8 @@
 {
   "info": {
     "name": "Team 3 - Predictive Maintenance API",
-    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Assistant requests make several LLM calls (plan, review, summary, answer), so set the request timeout to about 300 s (Postman: Settings > General > Request timeout; newman: --timeout-request 300000). Run 'Assistant question' first, then 'Assistant approve': the plan must be approved before any tool runs."
   },
   "variable": [
     {
@@ -11,6 +12,10 @@
     {
       "key": "apiKey",
       "value": "change-me"
+    },
+    {
+      "key": "run_id",
+      "value": ""
     }
   ],
   "item": [
@@ -420,7 +425,7 @@
         },
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"question\": \"Which machines at Valmora had the worst availability last month?\"\n}"
+          "raw": "{\n  \"question\": \"What was the fleet availability between 2026-04 and 2026-06?\"\n}"
         }
       },
       "event": [
@@ -430,7 +435,59 @@
             "type": "text/javascript",
             "exec": [
               "pm.test('status 200', () => pm.response.to.have.status(200));",
-              "pm.test('correlation id', () => pm.response.to.have.header('X-Correlation-ID'));"
+              "pm.test('correlation id', () => pm.response.to.have.header('X-Correlation-ID'));",
+              "const body = pm.response.json();",
+              "pm.test('plan awaits approval or is answered', () => pm.expect(['awaiting_approval', 'answered']).to.include(body.status));",
+              "pm.test('run_id is the correlation id', () => pm.expect(body.run_id).to.eql(pm.response.headers.get('X-Correlation-ID')));",
+              "pm.collectionVariables.set('run_id', body.run_id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Assistant approve",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-Correlation-ID",
+            "value": "{{run_id}}"
+          },
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/assistant/approve",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "assistant",
+            "approve"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"run_id\": \"{{run_id}}\",\n  \"approved\": true\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "const body = pm.response.json();",
+              "pm.test('answered', () => pm.expect(body.status).to.eql('answered'));",
+              "pm.test('structured answer', () => pm.expect(body.result).to.include.keys('answer', 'evidence', 'grounded', 'limitations'));"
             ]
           }
         }

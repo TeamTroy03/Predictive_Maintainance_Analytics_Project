@@ -94,8 +94,14 @@ answer = run("What was availability of equipment EQ-001 in 2026-01?")
 
 `run(question, approve=ask_on_console)` starts a graph run with a fresh `thread_id`,
 and when the graph pauses at the approval step it calls `approve(plan_text)` (default: a `[y/N]`
-prompt in the console) and resumes with the answer. For the API, pass an `approve` callback that
-returns the user's decision instead of reading from the console.
+prompt in the console) and resumes with the answer.
+
+The API cannot block on a console, so it uses the two halves of `run()` directly:
+`start_run(question, run_id=None)` runs until the approval step and returns `(run_id, plan_text, state)`
+(`plan_text` is `None` if the run already finished, e.g. a rejected plan), and `finish_run(run_id, approved)`
+resumes it and returns the final state (`answer` plus `trace`, one `{tool, args, ok, result}` per executed
+step). `run_exists(run_id)` and `pending_plan(run_id)` tell an unknown run from one waiting for approval.
+The API passes its correlation ID as `run_id` (see `src/app/api/agent.py`).
 
 The graph is compiled with an in-memory checkpointer (`MemorySaver`), which `interrupt()` needs;
 state is lost on restart.
@@ -161,13 +167,12 @@ environment values are written. Follow one question with e.g.
 ## Not implemented yet
 
 - Tests for `check_plan` and the run loop with a mocked LLM
-- Use the API request's correlation ID as `run_id` and move the logger to `core/logging.py` (today
-  `agent.py` generates its own `run_id` and writes its own file)
+- Move the logger to `core/logging.py` (the API now passes its correlation ID as `run_id`, but `agent.py`
+  still writes its own `.log/agent.log` file)
 - Prompt-injection guarding of the user question
-- Azure OpenAI settings in `core/config.py` (`OPENAI_API_VERSION` is missing from the env template)
-- Wiring `run()` into `services/assistant_service.py` and `/assistant/query`
-- The filtered detail/metadata tool: `get_sql_query` and `get_mock_equipment_status` are
-  placeholders, `detail_tools.py` is not connected
+- Azure OpenAI settings in `core/config.py`
+- Persistent checkpointer: the API's two-step approval (`start_run` / `finish_run`) keeps pending plans in
+  memory (`MemorySaver`), so it needs a single worker and a restart loses them
 - Knowledge Graph bonus tool
 - `prompts/system_prompt.py` and `schemas.py` are still docstring-only; the prompts and
   `AssistantAnswer` currently live in `agent.py`

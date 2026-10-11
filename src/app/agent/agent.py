@@ -201,17 +201,20 @@ def unverified_numbers(answer: AssistantAnswer, results: list) -> list[str]:
     return list(dict.fromkeys(bad))  # unique, in order
 
 
-def execute(question: str, p: Plan, run_id: str = "-") -> AssistantAnswer:
-    limitations, results = [], []
+def execute(question: str, p: Plan, run_id: str = "-") -> tuple[AssistantAnswer, list[dict]]:
+    """Run the approved steps; returns the answer and the trace of every tool call (tool, args, ok, result)."""
+    limitations, results, oks = [], [], []
     calls = [{"name": s.tool, "args": s.args, "id": f"step{i}"} for i, s in enumerate(p.steps)]
     tool_messages = [AIMessage(content="", tool_calls=calls)]  # ToolMessages must answer tool_calls
     for call in calls:
         start = time.perf_counter()
         try:
             result = TOOLS[call["name"]].invoke(call["args"])
+            oks.append(True)
             log_event("tool_call", run_id, tool=call["name"], args=call["args"], ok=True, duration_s=_since(start))
         except Exception as e:  # tool errors are reported, not raised
             result = None
+            oks.append(False)
             limitations.append(f"Tool '{call['name']}' failed: {e}")
             log_event("tool_call", run_id, logging.WARNING, tool=call["name"], args=call["args"], ok=False,
                       error=str(e), duration_s=_since(start))
@@ -230,7 +233,8 @@ def execute(question: str, p: Plan, run_id: str = "-") -> AssistantAnswer:
         answer.limitations.append(f"These numbers were not found in the tool results, please verify: {', '.join(bad)}.")
     log_event("answer_ready", run_id, unverified_numbers=bad, limitations=len(answer.limitations),
               duration_s=_since(start))
-    return answer
+    trace = [{"tool": c["name"], "args": c["args"], "ok": ok, "result": r} for c, ok, r in zip(calls, oks, results)]
+    return answer, trace
 
 
 def _refuse(reason: str) -> AssistantAnswer:
@@ -290,7 +294,8 @@ def executor_node(s: State) -> State:
     if s["verdict"] != "approve":  # nothing is executed
         log_event("not_executed", s["run_id"], verdict=s["verdict"], reasons=s["reasons"])
         return {"answer": _refuse(f"Plan not approved ({s['verdict']}): {' '.join(s['reasons'])}")}
-    return {"answer": execute(s["question"], s["plan"], s["run_id"])}
+    answer, trace = execute(s["question"], s["plan"], s["run_id"])
+    return {"answer": answer, "trace": trace}
 
 
 _graph = StateGraph(State)
@@ -310,19 +315,54 @@ def ask_on_console(text: str) -> bool:
     return input(f"\n{text}\n\nApprove this plan? [y/N] ").strip().lower() == "y"
 
 
-def run(question: str, approve=ask_on_console) -> AssistantAnswer:
-    run_id = uuid.uuid4().hex
-    config = {"configurable": {"thread_id": run_id}}
+def _config(run_id: str) -> dict:
+    return {"configurable": {"thread_id": run_id}}  # the run_id is the LangGraph thread_id
+
+
+def run_exists(run_id: str) -> bool:
+    """True if a run with this ID already has a checkpoint (pending or finished)."""
+    return bool(app.get_state(_config(run_id)).values)
+
+
+def pending_plan(run_id: str) -> str | None:
+    """The plan text if the run is paused at the approval step, else None (unknown or already finished)."""
+    state = app.get_state(_config(run_id))
+    return state.values.get("plan_text") if state.next == ("approval",) else None
+
+
+def start_run(question: str, run_id: str | None = None) -> tuple[str, str | None, dict]:
+    """Run until the approval step. Returns (run_id, plan_text, state): plan_text is the plan waiting for
+    approve/decline, or None when the run already finished (e.g. rejected plan) and state has the answer.
+    run_id lets the caller reuse its own correlation ID; it must not belong to an existing run."""
+    run_id = run_id or uuid.uuid4().hex
     start = time.perf_counter()
     log_event("run_started", run_id, question=question)
     try:
-        result = app.invoke({"question": question, "run_id": run_id}, config)
-        if "__interrupt__" in result:  # waiting for the user's decision
-            approved = approve(result["__interrupt__"][0].value)
-            log_event("plan_decision", run_id, approved=bool(approved))
-            result = app.invoke(Command(resume=approved), config)
+        result = app.invoke({"question": question, "run_id": run_id}, _config(run_id))
     except Exception as e:  # e.g. the LLM still failing after its bounded retries
         log_event("run_failed", run_id, logging.ERROR, exc_info=True, error=str(e), duration_s=_since(start))
         raise
+    if "__interrupt__" in result:
+        return run_id, result["__interrupt__"][0].value, result
     log_event("run_finished", run_id, verdict=result.get("verdict"), duration_s=_since(start))
+    return run_id, None, result
+
+
+def finish_run(run_id: str, approved: bool) -> dict:
+    """Resume a paused run with the user's decision; returns the final state (answer, trace)."""
+    start = time.perf_counter()
+    log_event("plan_decision", run_id, approved=bool(approved))
+    try:
+        result = app.invoke(Command(resume=approved), _config(run_id))
+    except Exception as e:
+        log_event("run_failed", run_id, logging.ERROR, exc_info=True, error=str(e), duration_s=_since(start))
+        raise
+    log_event("run_finished", run_id, verdict=result.get("verdict"), duration_s=_since(start))
+    return result
+
+
+def run(question: str, approve=ask_on_console) -> AssistantAnswer:
+    run_id, plan_text, result = start_run(question)
+    if plan_text is not None:  # waiting for the user's decision
+        result = finish_run(run_id, approve(plan_text))
     return result["answer"]

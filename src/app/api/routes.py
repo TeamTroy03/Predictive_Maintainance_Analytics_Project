@@ -6,7 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query, Request
 from fastapi.responses import JSONResponse
 
-from app.api.agent import AgentTools, answer_question
+from app.api.agent import approve_run, start_question
 from app.api.config import Settings, get_settings
 from app.api.db import GoldDB
 from app.api.errors import ERROR_RESPONSES, ErrorResponse
@@ -14,8 +14,9 @@ from app.api.kpis import KPI_DEFINITIONS
 from app.api.schemas import (
     AnalyticsQuery,
     AnalyticsResult,
-    AssistantAnswer,
+    AssistantApproval,
     AssistantQuery,
+    AssistantResponse,
     EquipmentHealth,
     Health,
     Priority,
@@ -107,12 +108,29 @@ def get_overdue_work_orders(
 
 
 # ---------------------------------------------------------------- assistant
+# The agent pauses for human approval of its plan, so the assistant has two steps. Both calls make
+# several LLM calls: use a client timeout of about 300 s.
 @api.post(
     "/assistant/query",
-    response_model=AssistantAnswer,
+    response_model=AssistantResponse,
     tags=["assistant"],
-    summary="Ask a question; the agent may only use the approved data tools",
+    summary="Step 1: ask a question; returns the agent's plan waiting for approval",
     responses={429: {"model": ErrorResponse, "description": "LLM rate limit"}},
 )
-def assistant_query(body: AssistantQuery, db: GoldDB = Depends(get_db)) -> AssistantAnswer:
-    return answer_question(body.question, AgentTools(db))
+def assistant_query(body: AssistantQuery) -> AssistantResponse:
+    return start_question(body.question)
+
+
+@api.post(
+    "/assistant/approve",
+    response_model=AssistantResponse,
+    tags=["assistant"],
+    summary="Step 2: approve or decline the plan; returns the answer",
+    responses={
+        404: {"model": ErrorResponse, "description": "Unknown or expired run_id"},
+        409: {"model": ErrorResponse, "description": "The run is not waiting for approval"},
+        429: {"model": ErrorResponse, "description": "LLM rate limit"},
+    },
+)
+def assistant_approve(body: AssistantApproval) -> AssistantResponse:
+    return approve_run(body.run_id, body.approved)
