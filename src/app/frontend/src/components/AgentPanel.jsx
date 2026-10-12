@@ -112,10 +112,19 @@ export default function AgentPanel() {
   const { open, setOpen, messages, setMessages, busy, awaitingApproval, ask, decide, context } = useAgent()
   const [input, setInput] = useState('')
   const bottomRef = useRef(null)
+  const inputRef = useRef(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, busy])
+
+  // Grow the input with its text (capped by max-h in the className; it scrolls past that)
+  useEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [input, open])
 
   if (!open) return null
 
@@ -126,7 +135,7 @@ export default function AgentPanel() {
   }
 
   return (
-    <aside className="flex w-80 shrink-0 flex-col border-l border-line bg-white">
+    <aside className="flex w-[368px] shrink-0 flex-col border-l border-line bg-white">
       <div className="flex items-center justify-between border-b border-line px-4 py-3">
         <div>
           <div className="text-sm font-semibold">✦ AI Diagnostic Assistant</div>
@@ -174,23 +183,47 @@ export default function AgentPanel() {
             )}
           </div>
         ))}
-        {busy && <div className="text-sm text-gray-500">Agent is working… this can take up to a minute.</div>}
+        {busy && <Working />}
         {awaitingApproval && !busy && <div className="text-xs text-gray-500">Approve or decline the plan to continue.</div>}
         <div ref={bottomRef} />
       </div>
 
-      <form onSubmit={submit} className="flex gap-2 border-t border-line p-3">
-        <input
+      <form onSubmit={submit} className="flex items-end gap-2 border-t border-line p-3">
+        <textarea
+          ref={inputRef}
+          rows={1}
           value={input}
           onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            // Enter sends, Shift+Enter adds a line
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              e.currentTarget.form.requestSubmit()
+            }
+          }}
           placeholder="Ask the agent…"
-          className="min-w-0 flex-1 rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-brand"
+          className="max-h-48 min-w-0 flex-1 resize-none rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-brand"
         />
         <button disabled={busy || awaitingApproval || !input.trim()} className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
           Send
         </button>
       </form>
     </aside>
+  )
+}
+
+// "Agent working ." -> ".." -> "..." on repeat; the dots get a fixed width so the text doesn't jump
+function Working() {
+  const [dots, setDots] = useState(1)
+  useEffect(() => {
+    const id = setInterval(() => setDots((d) => (d % 3) + 1), 450)
+    return () => clearInterval(id)
+  }, [])
+  return (
+    <div className="text-sm text-gray-500">
+      Agent working<span className="inline-block w-4">{'.'.repeat(dots)}</span>
+      <div className="text-xs">This can take up to a minute.</div>
+    </div>
   )
 }
 
