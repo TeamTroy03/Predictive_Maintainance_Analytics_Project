@@ -1,16 +1,19 @@
 # Raw source files
 
-**Spec:** §4 Dataset, input to §6.1 Bronze · **Owner:** @participant1
+**Spec:** §4 Dataset, input to §6.1 Bronze
 
 **Acceptance condition:** the four Team 3 source files exist here with the defects in `../README.md`
 and are ingestible by `databricks/bronze/` without manual edits.
 
-| File | Class | Content |
-|---|---|---|
-| `equipment.csv` | Reference | Equipment master: ID, type, site, install date, rated limits |
-| `maintenance_history.csv` | Transactional | Completed maintenance/failure events, failure mode, cost |
-| `work_orders.csv` | Transactional | Work orders: created/due/closed timestamps, type, status |
-| `sensor_events.json` | Semi-structured | Nested sensor readings per equipment and timestamp |
+| Dataset | Class | Content | Baseline file |
+|---|---|---|---|
+| `equipment` | Reference | Equipment master: ID, type, site, install date, rated limits | `equipment_2.csv` |
+| `maintenance_history` | Transactional | Completed maintenance/failure events, failure mode, cost | `maintenance_history_2.csv` |
+| `work_orders` | Transactional | Work orders: created/due/closed timestamps, type, status | `work_orders_2.csv` |
+| `sensor_events` | Semi-structured | Nested sensor readings per equipment and timestamp | `sensor_events_2.json` |
+
+`chain.json` is the index of the delivered files (see below). In the Databricks volume `datasets/` the baseline is stored
+without the `_2` suffix (`equipment.csv`, ...), `test_datasets/` uses the `_2` names; the chain's `aliases` cover both.
 
 Keep files small enough to refresh live during the demo.
 

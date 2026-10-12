@@ -1,6 +1,6 @@
 # LangChain Core assistant
 
-**Spec:** §6.5 LangChain Core: Talking to the LLM and Tools · **Owner:** @participant3
+**Spec:** §6.5 LangChain Core: Talking to the LLM and Tools
 **Deliverable:** LangChain Core integration → `docs/langchain_integration.md`
 
 **Acceptance condition:** a user question can trigger a validated tool call, receive a result

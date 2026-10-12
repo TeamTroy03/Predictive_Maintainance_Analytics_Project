@@ -55,7 +55,7 @@ ones, no new downtime starts while an asset is still down from earlier data, onl
 no equipment file is written (the plant is unchanged). The run is then recorded in ``chain.json``. See ``README.md``.
 
 Only the Python standard library is used for generation; ``--upload`` also needs databricks-sdk
-(``pip install -e ".[databricks]"``) and ``DATABRICKS_HOST`` / ``DATABRICKS_TOKEN``.
+(``uv sync --extra databricks``, then run with ``uv run python``) and ``DATABRICKS_HOST`` / ``DATABRICKS_TOKEN``.
 """
 from __future__ import annotations
 

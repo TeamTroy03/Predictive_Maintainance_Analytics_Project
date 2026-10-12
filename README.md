@@ -1,6 +1,6 @@
 # Team 3 — Predictive Maintenance Analytics
 
-AI and Data Capstone (Accenture / Code.Hub). Spec: [`context/`](context/).
+AI and Data Capstone (Accenture / Code.Hub). Spec: `[context/](context/)`.
 
 An industrial company needs to understand equipment health, abnormal sensor behavior,
 maintenance effectiveness, downtime and recurring failure modes.
@@ -13,57 +13,90 @@ with FastAPI + LangChain Core exposing approved analytical tools, hosted on Azur
 
 ## Spec → repository map
 
-| Spec | Scope | Code | Docs |
-|---|---|---|---|
-| §4 | Dataset | `src/data/` | `docs/business_brief.md` |
-| §6.1 | Bronze ingestion | `databricks/bronze/`, `databricks/common/` | `docs/databricks_implementation.md` |
-| §6.2 | Silver preparation | `databricks/silver/`, `tests/data_quality/` | `docs/quality_evidence.md` |
-| §6.3 | Gold dimensional model | `databricks/golden/` | `docs/dimensional_model.md` |
-| §6.4 | Fabric semantic model & report | `fabric/` | `docs/fabric_powerbi.md` |
-| §6.5 | LangChain Core | `src/app/agent/` | `docs/langchain_integration.md` |
-| §6.6 | Azure fundamentals | `infra/` | `docs/azure_design.md` |
-| §6.7 | REST / FastAPI | `src/app/api/`, `postman/` | `docs/fastapi_integration.md` |
-| §6.8 | CI/CD | `.github/workflows/`, `Dockerfile` | `docs/cicd.md` |
-| §7 | Testing & operations | `tests/` | `docs/runbook.md` |
-| §8 | Project management | — | `docs/project_management.md`, `docs/adr/` |
+
+| Spec | Scope                          | Code                                        | Docs                                      |
+| ---- | ------------------------------ | ------------------------------------------- | ----------------------------------------- |
+| §4   | Dataset                        | `src/data/`                                 | `docs/business_brief.md`                  |
+| §6.1 | Bronze ingestion               | `databricks/bronze/`, `databricks/common/`  | `docs/databricks_implementation.md`       |
+| §6.2 | Silver preparation             | `databricks/silver/`, `tests/data_quality/` | `docs/quality_evidence.md`                |
+| §6.3 | Gold dimensional model         | `databricks/golden/`                        | `docs/dimensional_model.md`               |
+| §6.4 | Fabric semantic model & report | `fabric/`                                   | `docs/fabric_powerbi.md`                  |
+| §6.5 | LangChain Core                 | `src/app/agent/`                            | `docs/langchain_integration.md`           |
+| §6.6 | Azure fundamentals             | `infra/`                                    | `docs/azure_design.md`                    |
+| §6.7 | REST / FastAPI                 | `src/app/api/`, `postman/`                  | `docs/fastapi_integration.md`             |
+| §6.8 | CI/CD                          | `.github/workflows/`, `Dockerfile`          | `docs/cicd.md`                            |
+| §7   | Testing & operations           | `tests/`                                    | `docs/runbook.md`                         |
+| §8   | Project management             | —                                           | `docs/project_management.md`, `docs/adr/` |
+
+
+
+
+## What each task in §6 asks for
+
+§6 of the spec is the mandatory scope of work. All eight tasks apply to every team; the "Team 3" notes are our case.
+The weight is the share of the final grade (§9; §6.6 and §6.7 are graded together). Optional extras only count after the
+whole baseline works end to end.
+
+
+| §   | Task                                            | What it asks for                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Done when (acceptance)                                                                                                                                                      | Weight          |
+| --- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| 6.1 | **Databricks: Bronze ingestion**                | Load the raw CSV and JSON files into Delta tables exactly as delivered, with no business changes, and record where every row came from. Needs: parameterized ingestion for CSV and JSON; ingestion timestamp, batch ID, source file name, record hash and load status on every row; schema validation with a controlled reaction to schema drift; reruns that do not create duplicates (incremental load or a justified full refresh); a log of input, written and rejected counts, duration and failures.                                                                                                                                                                                                                                                                                                 | Any downstream record can be traced to its source file and batch, and a failed batch can be rerun without uncontrolled duplicates.                                          | 12 %            |
+| 6.2 | **Databricks: Silver preparation**              | Turn the raw data into clean, consistent, analysis-ready tables and keep the rejected rows visible. Needs: standardized names, types, dates, time zones, codes, currencies and units; domain rules, deduplication and a decision for invalid or missing keys; flattened JSON joined with the reference data; data-quality checks for completeness, validity, uniqueness and referential integrity; a quarantine table with reason, rule and timestamp; documented handling of slowly changing reference attributes and late-arriving events. Team 3 priority rules: out-of-range readings, unit inconsistency, missing equipment keys, overlapping downtime, work order closed before created, duplicate sensor events.                                                                                    | Records are analytically consistent, quality results are measurable, and rejected records stay visible and actionable.                                                      | 15 %            |
+| 6.3 | **Databricks: Gold dimensional model**          | Build a Delta star schema from which every business number can be calculated. Needs: the stated grain of every fact; at least one central fact and four dimensions including a date dimension; surrogate keys and documented handling of unknown members; business measures, status logic and aggregates; an optimized Delta layout with a short performance rationale; a Silver to Gold reconciliation of row counts and critical totals; table and column descriptions. Team 3: facts `fact_sensor_reading`, `fact_maintenance_work_order`, `fact_downtime`; KPIs asset availability, unplanned downtime, MTBF, MTTR, overdue work orders, alarm rate, maintenance cost, repeat-failure rate.                                                                                                            | Business measures can be reproduced from the documented facts and dimensions, with no inconsistent logic hidden in report visuals.                                          | 15 %            |
+| 6.4 | **Microsoft Fabric: semantic model and report** | Put a governed business layer and a report on top of Gold, connected the way the instructor agreed. Needs: relationships, hierarchies, formats, descriptions and a dedicated measures table; at least eight explicit DAX measures (volume, rate or ratio, trend, exception); a proper date table with checked filter direction; row-level security if the case has ownership boundaries (Team 3: by site); at least three report pages (executive overview, analytical detail, exceptions or drill-through) with filters, tooltips, accessible titles, clear units and a visible last-refresh indicator; report totals validated against Gold and performance observations written down. Team 3 pages: fleet health, sensor trends, maintenance performance, equipment drill-through, critical exceptions. | Report totals match Gold, and the business terms and logic live in the semantic model (the spec states no separate acceptance sentence for this task).                      | 15 %            |
+| 6.5 | **LangChain Core: LLM and tools**               | A small, auditable assistant built with `langchain-core`. The LLM is only an interface to approved analytical functions: it must not bypass the semantic model, invent data or take business actions. Needs: correct system, human, AI and tool messages; prompt templates for business context, evidence, response format and limitations; at least two typed tools (one KPI or aggregate, one filtered detail or metadata) bound to the chat model; detection of tool calls, argument validation, execution and a `ToolMessage` back to the model; structured output with answer, evidence, filters, source or measure and limitations; handling of malformed arguments, unavailable data, tool errors and out-of-scope requests.                                                                        | A question triggers a validated tool call, gets a result grounded in Gold, and produces an evidence-based answer with a traceable execution path.                           | 10 %            |
+| 6.6 | **Azure fundamentals**                          | Document and apply the Azure foundation that hosts and secures the components. Needs: the account, subscription and resource group boundary; least-privilege role-based access with the responsibilities of users, developers and the runtime identity; justified Storage, Compute and Networking choices; secrets outside source control, in Key Vault for the deployed solution; an environment diagram and a short resource inventory with naming and responsibilities.                                                                                                                                                                                                                                                                                                                                 | The foundation is documented and applied (diagram, inventory, access model, secrets in Key Vault).                                                                          | 10 % (with 6.7) |
+| 6.7 | **REST APIs, FastAPI and Azure integration**    | A documented API that connects consumers to the approved analytics and the assistant. Needs: REST fundamentals (resources, verbs, status codes, consistent errors); FastAPI routes with Pydantic models, validation and exception handling; OpenAPI docs and a Postman collection; timeouts, pagination, bounded retries and rate-limit handling for external calls; endpoint protection (API keys in development, OAuth2 bearer or JWT for the deployed design); health and readiness endpoints, correlation IDs and structured logs without secrets; an end-to-end connection to Gold and the LangChain tools (mocks only when clearly documented). Minimum API: `GET /health`, `POST /analytics/query`, `POST /assistant/query` and one domain endpoint.                                                | The API works end to end against Gold and the assistant, is protected, and is documented and testable (the spec states no separate acceptance sentence for this task).      | 10 % (with 6.6) |
+| 6.8 | **Applied DevOps: CI/CD**                       | A versioned pipeline in GitHub Actions or Azure DevOps. Needs: triggers on pull requests and the main branch; separate lint, test, build and deploy jobs with clear dependencies; the API (and its container image) built as a reproducible artifact; secrets only from the repository or pipeline secret store; environments, approvals and staged deployment; documented rollback, configuration promotion and the evidence required before approval.                                                                                                                                                                                                                                                                                                                                                    | A source change triggers the pipeline, the quality gates run automatically, an artifact is built, and the deployment either completes or waits for the configured approval. | 8 %             |
+
+
+The other sections referenced in this repo: §4 dataset (what the data must contain, see `src/data/`), §5 architecture
+(Bronze, Silver, Gold, Fabric, API, assistant, Azure), §7 deliverables (the `docs/` files in the map above), §8 roles and
+process (see the spec) and §9 evaluation (the weights above, plus 8 % for business framing and KPIs, 7 % for the demo and
+teamwork, and a 5 % bonus for a small knowledge graph exposed through the assistant).
 
 ## Repository layout
 
 ```text
-.github/workflows/   ci.yml (lint, test, image build) · deploy.yml (approval-gated)
-context/             original spec PDF
+.github/             CODEOWNERS (git-ignored) · workflows/ci.yml and deploy.yml are planned, not written yet
+context/             original spec PDF · silver_max/ (maintenance Silver rules)
 databricks/          common/ · bronze/ · silver/ · golden/ · jobs/  (not a Python package)
-docs/                one flat .md per deliverable · adr/ · diagrams/
-fabric/              semantic-model/ · report/  (PBIP / TMDL source)
-infra/bicep-scripts/ main.bicep + dev/prod .bicepparam
-postman/             collection.json · environment.json
+                     bronze/ and silver/ hold notebooks/scripts; common/ and jobs/ are still empty
+docs/                adr/ (0001: new data continues the delivered plant); the other deliverable .md files
+                     in the map above are still to be written
+fabric/              semantic-model/ (model diagrams, PNG) · report/  (PBIP / TMDL source still to come)
+infra/bicep-scripts/ main.bicep (skeleton: params only) + dev/prod .bicepparam
+postman/             team3-pm-api.postman_collection.json
 src/app/
-  api/               main.py · routes/ (one router per endpoint group) · schemas/ (Pydantic)
-  agent/             LangChain Core: agent.py · schemas.py · prompts/ · tools/
-  core/              config · logging · security
-  services/          business logic shared by routes and agent tools
-src/data/            generate/ (seeded generator) · raw/ (source files for Bronze)
-tests/               unit/ · data_quality/ · integration/
+  api/               FastAPI: main.py · routes.py (all endpoints) · schemas.py (Pydantic) · services.py, kpis.py,
+                     dashboard.py, assets.py (Gold queries and page payloads) · db.py · security.py · errors.py
+  agent/             LangChain Core + LangGraph assistant: agent.py · schemas.py · prompts/ · tools/
+  core/              config.py · logging.py · security.py (settings, JSON logs, password/session/JWT logic)
+  frontend/          React + Vite web app (AssetPulse), talks to the API through /api
+  services/          docstring-only stubs, not used: the service layer is src/app/api/services.py
+src/data/            generate/ (seeded generator, --continue, base_state.py, checks/silver_check.py) ·
+                     upload/ (volume upload with a conflict check) · raw/ (delivered files: *_2 baseline + chain.json)
+tests/               unit/ · data_quality/ (no tests yet) · integration/ (live, manual)
+tasks/               todo.md (working notes)
 ```
-
-## Team (§8)
-
-| Handle | Role |
-|---|---|
-| @participant1 | Data engineering |
-| @participant2 | Analytics |
-| @participant3 | AI and API |
-| @participant4 | Cloud and DevOps |
-| @participant5 | Project manager |
 
 ## Local development
 
-Requires Python 3.14+.
+Uses [uv](https://docs.astral.sh/uv/getting-started/installation/) (not pip) and Node.js for the frontend. uv reads the
+Python version from `.python-version` (3.14, downloaded if missing) and the exact dependency versions from `uv.lock`.
 
 ```bash
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
-cp .env.example .env                                # fill in locally; never commit .env
-ruff check . && pytest
-uvicorn app.api.main:app --reload                   # http://localhost:8000/docs
+uv sync --extra dev                                 # creates .venv and installs the locked dependencies
+                                                    # add --extra databricks to upload generated data
+#cp .env.example .env                                # fill in locally; never commit .env
+uv run ruff check . && uv run pytest -m "not integration"   # what CI runs; integration tests need a deployed environment
+uv run uvicorn app.api.main:app --reload            # http://localhost:8000/docs
+cd src/app/frontend && npm install && npm run dev   # http://localhost:5173 (proxies /api to the API)
 ```
+
+`uv run` uses the project's `.venv` automatically, so there is nothing to activate. When you add a dependency, use
+`uv add <package>` (or `uv add --optional dev <package>`) so that `pyproject.toml` and `uv.lock` change together.
+
+Folder READMEs: `[src/data/](src/data/README.md)` (data, generator, upload), `[src/app/api/](src/app/api/README.md)`,
+`[src/app/agent/](src/app/agent/README.md)`, `[src/app/frontend/](src/app/frontend/README.md)`,
+`[databricks/](databricks/README.md)`, `[tests/](tests/README.md)`.

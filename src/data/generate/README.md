@@ -10,14 +10,14 @@ can be verified in `docs/quality_evidence.md`.
 Standard library only, Python 3.14+. Run from any directory:
 
 ```bash
-python src/data/generate/generate_data.py                       # defaults, reproducible
-python src/data/generate/generate_data.py --no-seed             # new random data each run
-python src/data/generate/generate_data.py --rows-per-file 20000 --defect-rate 0.03
-python src/data/generate/generate_data.py --out ./elsewhere     # different data folder
-python src/data/generate/generate_data.py --upload              # generate, then upload the run to Databricks
-python src/data/generate/generate_data.py --upload --folder test_datasets
-python src/data/generate/generate_data.py --continue            # new activity for the delivered plant
-python src/data/generate/generate_data.py --continue --days 35 --upload --folder test_datasets
+uv run python src/data/generate/generate_data.py                       # defaults, reproducible
+uv run python src/data/generate/generate_data.py --no-seed             # new random data each run
+uv run python src/data/generate/generate_data.py --rows-per-file 20000 --defect-rate 0.03
+uv run python src/data/generate/generate_data.py --out ./elsewhere     # different data folder
+uv run python src/data/generate/generate_data.py --upload              # generate, then upload the run to Databricks
+uv run python src/data/generate/generate_data.py --upload --folder test_datasets
+uv run python src/data/generate/generate_data.py --continue            # new activity for the delivered plant
+uv run python src/data/generate/generate_data.py --continue --days 35 --upload --folder test_datasets
 ```
 
 **Without `--continue` a run builds a brand-new plant** (ids restart at `EQ-10001`, `WO-26001`, ...). Two such runs
@@ -27,7 +27,7 @@ must never share a Bronze/Silver: they reuse keys for different assets and overl
 ### Example: generate new data and upload it to `test_datasets`
 
 ```bash
-python src/data/generate/generate_data.py --continue --rows-per-file 1000 --days 21 --upload --folder test_datasets
+uv run python src/data/generate/generate_data.py --continue --rows-per-file 1000 --days 21 --upload --folder test_datasets
 ```
 
 This continues the plant delivered so far (`src/data/raw/chain.json`: the `*_2` baseline plus any earlier increments):
@@ -41,7 +41,7 @@ This continues the plant delivered so far (`src/data/raw/chain.json`: the `*_2` 
 
 Running the same command again adds the *next* 21-day window after this one. Do not run it twice by accident, and do not
 skip an increment: upload them in order. If the upload fails after generating, the files and the `chain.json` entry are
-already saved, so retry only the upload: `python src/data/upload/upload_to_databricks.py --folder test_datasets`
+already saved, so retry only the upload: `uv run python src/data/upload/upload_to_databricks.py --folder test_datasets`
 (`--dry-run` previews the target paths without connecting). Commit `chain.json` together with the new files.
 
 
@@ -52,7 +52,7 @@ already saved, so retry only the upload: `python src/data/upload/upload_to_datab
 | `--rows-per-file`      | `10000`         | Rows in *each* file (1,000–100,000)                                |
 | `--defect-rate`        | `0.05`          | Fraction of rows per file with one injected defect (0–0.10)        |
 | `--seed` / `--no-seed` | `20260915` / –  | Fixed seed, or draw a fresh one (printed and saved in the summary) |
-| `--upload`             | off             | After generating, upload the new run to the Databricks volume (needs `.[databricks]`, `DATABRICKS_HOST`, `DATABRICKS_TOKEN`) |
+| `--upload`             | off             | After generating, upload the new run to the Databricks volume (needs `uv sync --extra databricks`, `DATABRICKS_HOST`, `DATABRICKS_TOKEN`) |
 | `--folder`             | `datasets`      | With `--upload`: `datasets` or `test_datasets` under `/Volumes/data2026acc123456/team3` |
 | `--force-upload`       | off             | With `--upload`: skip the volume check that refuses conflicting runs (use with care) |
 | `--continue`           | off             | Extend the delivered plant instead of building a new one (see below) |
@@ -111,25 +111,27 @@ later increments); windows shorter than 21 days cannot place the injected defect
 Every run gets a UTC timestamp `<ts>` (`YYYYmmdd_HHMMSS`) so files never overwrite each other.
 
 ```
-src/data/raw/                          only the four source datasets
-  equipment_<ts>.csv                   asset master (one row per asset version)
+src/data/raw/                          the source datasets of this run (next to the delivered baseline and chain.json)
+  equipment_<ts>.csv                   asset master (one row per asset version); NOT written by --continue
   work_orders_<ts>.csv                 work orders (one row per version)
   maintenance_history_<ts>.csv         maintenance activities (one row per version)
   sensor_events_<ts>.json              IoT readings (JSON array, nested)
 src/data/.log/<ts>/                    everything else from that run
   defect_manifest.csv                  every injected defect: file, row index, key, rule, expected handling
   generation_summary.json              seed, parameters, defect plan, row/batch counts
-  batches/batch_01|02/                 the same four files split by delivery batch (for incremental loads)
+  batches/batch_01|02/                 the same files split by delivery batch (for incremental loads)
   reference/                           failure modes, root causes, components, FX rates
   config/sensor_limits.csv             per-equipment-type sensor limits and valid ranges
 ```
 
-Column contracts are in `docs/data/data_dictionary.md`.
+The column contracts are the `EQUIPMENT_COLUMNS`, `WORK_ORDER_COLUMNS` and `MAINTENANCE_COLUMNS` lists in
+`generate_data.py` (there is no separate data dictionary file in `docs/` yet).
 
 ## How it works
 
 1. **Build the plant:** assets (9 equipment types, 2 sites) with type-specific ratings, parent/child links and
-  SCD type-2 changes; 20 assets are IoT-monitored.
+  SCD type-2 changes; 20 assets are IoT-monitored. (With `--continue` nothing is built: the assets of the delivered
+  `equipment_2.csv` are reused, see [Continuing the delivered plant](#continuing-the-delivered-plant).)
 2. **Simulate events:** work orders (corrective, preventive, predictive, inspection) with SLAs, downtime and
   repeat failures; unplanned failures on monitored assets are preceded by 7–45 days of failure-mode-specific
    sensor degradation. Readings follow load, season and noise in SI units.

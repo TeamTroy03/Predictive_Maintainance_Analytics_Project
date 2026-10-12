@@ -24,7 +24,7 @@ Usage
     python upload_to_databricks.py --force                      # upload even though the volume check refuses
 
 Credentials come from ``DATABRICKS_HOST`` and ``DATABRICKS_TOKEN`` (environment or the repo ``.env``).
-Needs ``pip install -e ".[databricks]"`` for the actual upload (not for ``--dry-run``).
+Needs ``uv sync --extra databricks`` for the actual upload (not for ``--dry-run``); run it with ``uv run python``.
 ``generate_data.py --upload`` calls :func:`upload_run` after generating.
 """
 from __future__ import annotations
@@ -222,7 +222,7 @@ def make_client() -> Any:
     try:
         from databricks.sdk import WorkspaceClient
     except ImportError:
-        sys.exit('databricks-sdk is not installed: pip install -e ".[databricks]"')
+        sys.exit("databricks-sdk is not installed: run 'uv sync --extra databricks' and start this script with 'uv run python'")
     return WorkspaceClient(host=host, token=token)
 
 

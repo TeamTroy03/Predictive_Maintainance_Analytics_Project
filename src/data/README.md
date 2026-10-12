@@ -1,12 +1,12 @@
 # Data
 
 **Spec:** §4 Dataset · **Deliverable:** Business and data brief → `docs/business_brief.md`
-**Owner:** @participant1
 
 **Acceptance condition (§4 minimums):**
-- Transactional CSV: `maintenance_history.csv`, `work_orders.csv` (related, with dates, IDs, costs/durations)
-- Reference CSV: `equipment.csv`
-- Semi-structured JSON: `sensor_events.json`
+- Transactional CSV: `maintenance_history`, `work_orders` (related, with dates, IDs, costs/durations)
+- Reference CSV: `equipment`
+- Semi-structured JSON: `sensor_events`
+  (files are named `<dataset>_<tag>.<ext>`: `_2` for the baseline, a timestamp for every later increment)
 - ≥ 10,000 transactional/event records in total
 - Deliberately injected quality defects (see below)
 - Synthetic only: no real personal or confidential information
@@ -15,8 +15,8 @@
 
 | Folder | Contents |
 |---|---|
-| `raw/` | The four source files as delivered to Bronze |
-| `generate/` | Script that produces `raw/` reproducibly (fixed seed) |
+| `raw/` | The delivered source files (baseline `*_2` + increments) and `chain.json`, the index of what was delivered |
+| `generate/` | `generate_data.py` (seeded generator, `--continue` for new activity on the delivered plant), `base_state.py` (reads the delivered files), `checks/silver_check.py` (runs the Silver notebooks' rules on the files) |
 | `upload/` | Uploads one generated run to the Databricks volume (`team3/datasets` or `team3/test_datasets`) |
 
 `raw/chain.json` lists the delivered files (baseline `*_2` + increments). New data must be a **continuation** of that
@@ -37,10 +37,10 @@ Each run goes to one sub-folder per dataset, e.g.
 `/Volumes/data2026acc123456/team3/test_datasets/work_orders/work_orders_<ts>.csv`.
 
 ```bash
-pip install -e ".[databricks]"                                            # databricks-sdk
-python src/data/generate/generate_data.py --continue --upload --folder test_datasets  # new activity, then upload
-python src/data/upload/upload_to_databricks.py --folder test_datasets     # upload the latest run in raw/
-python src/data/upload/upload_to_databricks.py --dry-run                  # show the mapping only
+uv sync --extra dev --extra databricks                                       # adds databricks-sdk to the project environment
+uv run python src/data/generate/generate_data.py --continue --upload --folder test_datasets  # new activity, then upload
+uv run python src/data/upload/upload_to_databricks.py --folder test_datasets     # upload the latest run in raw/
+uv run python src/data/upload/upload_to_databricks.py --dry-run                  # show the mapping only
 ```
 
 Before uploading, the volume is checked (skipped with `--dry-run`, overridden with `--force`): a new plant is refused when

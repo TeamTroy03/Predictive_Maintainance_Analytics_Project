@@ -1,6 +1,6 @@
 # Power BI report
 
-**Spec:** §6.4 · **Owner:** @participant2
+**Spec:** §6.4
 
 **Acceptance condition:** at least three pages (executive overview, analytical detail,
 exceptions/drill-through) with filters, tooltips, accessible titles, clear units and a visible
