@@ -17,6 +17,9 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: env.VITE_API_TARGET || 'http://localhost:8000',
           changeOrigin: true,
+          // The assistant makes several LLM calls per request: don't let the dev proxy cut it off.
+          timeout: 300_000,
+          proxyTimeout: 300_000,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
       },

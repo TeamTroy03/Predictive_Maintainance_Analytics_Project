@@ -14,23 +14,45 @@ const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
 
 // The session is an HttpOnly cookie set by FastAPI: the browser sends it by itself, JavaScript never sees it.
-async function request(path, options = {}) {
-  const response = await fetch(`${BASE_URL}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    ...options,
-  })
-  if (!response.ok) {
-    // Session expired while using the app: reload, the app then shows the login page.
-    if (response.status === 401 && !path.startsWith('/api/auth/')) window.location.reload()
-    const text = await response.text()
-    throw new Error(`${response.status} ${response.statusText}: ${text || path}`)
+async function request(path, { timeoutMs, ...options } = {}) {
+  const controller = new AbortController()
+  const timer = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null
+  try {
+    const response = await fetch(`${BASE_URL}${path}`, {
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      signal: controller.signal,
+      ...options,
+    })
+    if (!response.ok) {
+      // Session expired while using the app: reload, the app then shows the login page.
+      if (response.status === 401 && !path.startsWith('/api/auth/')) window.location.reload()
+      const text = await response.text()
+      throw new Error(`${response.status} ${response.statusText}: ${text || path}`, { cause: parseApiError(text) })
+    }
+    return await response.json()
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)} s`)
+    throw err
+  } finally {
+    if (timer) clearTimeout(timer)
   }
-  return response.json()
+}
+
+// FastAPI errors look like { error: { code, message, correlation_id, details } }
+function parseApiError(text) {
+  try {
+    return JSON.parse(text).error ?? undefined
+  } catch {
+    return undefined
+  }
 }
 
 const get = (path) => request(path)
-const post = (path, body) => request(path, { method: 'POST', body: JSON.stringify(body ?? {}) })
+const post = (path, body, timeoutMs) => request(path, { method: 'POST', body: JSON.stringify(body ?? {}), timeoutMs })
+
+// Each assistant call makes several sequential LLM calls (tens of seconds, minutes in the worst case).
+const ASSISTANT_TIMEOUT_MS = 300_000
 
 function query(params) {
   const clean = Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== ''))
@@ -72,8 +94,14 @@ export const api = {
   getAlarms: (filters = {}) => (USE_MOCK ? mock.getAlarms(filters) : get(`/api/alarms${query(filters)}`)),
   acknowledgeAlarm: pending('Alarm acknowledgement', mock.acknowledgeAlarm),
 
-  // AI agent (needs the two-step /assistant/query + /assistant/approve flow)
-  askAgent: pending('AI assistant', mock.askAgent),
+  // AI agent, two steps: askAgent -> { status: 'awaiting_approval', run_id, plan } (or already 'answered'),
+  // then approveAgent -> { status: 'answered', result: { answer, evidence, grounded, limitations, filters, source_measure } }
+  askAgent: (question) =>
+    USE_MOCK ? mock.askAgent(question) : post('/api/assistant/query', { question }, ASSISTANT_TIMEOUT_MS),
+  approveAgent: (runId, approved) =>
+    USE_MOCK
+      ? mock.approveAgent(runId, approved)
+      : post('/api/assistant/approve', { run_id: runId, approved }, ASSISTANT_TIMEOUT_MS),
 }
 
 export const isMockMode = USE_MOCK
