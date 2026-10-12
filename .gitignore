@@ -15,7 +15,7 @@ graphify-out/
 
 # Secrets: never commit (§6.6, §6.8)
 .env
-.env.*
+.env.example
 !.env.example
 *.pem
 *.key
@@ -44,6 +44,3 @@ data/*
 
 #Log files
 *.log*
-
-#In Development
-src/data/upload/*

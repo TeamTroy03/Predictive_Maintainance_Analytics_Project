@@ -21,9 +21,11 @@ dependencies = [
     "sqlglot>=30.22.0",
     "databricks>=0.2",
     "databricks-sql-connector>=4.6.0",
+    "databricks-sdk>=0.151.0",
 ]
 
 [project.optional-dependencies]
+databricks = ["databricks-sdk"]
 dev = [
     "httpx2>=2.13.1",
     "pytest>=9.1.1",

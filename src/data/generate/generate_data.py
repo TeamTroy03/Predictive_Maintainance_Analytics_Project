@@ -43,8 +43,19 @@ Usage
     python generate_data.py --out ./data                          # defaults, reproducible
     python generate_data.py --out ./data --rows-per-file 20000 --defect-rate 0.03
     python generate_data.py --out ./data --no-seed                # new random data each run
+    python generate_data.py --upload                              # also upload the new run to the Databricks volume
+    python generate_data.py --upload --folder test_datasets       # ... to team3/test_datasets instead of datasets
+    python generate_data.py --continue                            # new activity for the delivered plant (no new plant)
+    python generate_data.py --continue --days 35 --upload --folder test_datasets
 
-Only the Python standard library is used.
+Continuation (``--continue``): runs without it build a brand-new plant whose ids (``EQ-10001``, ``WO-26001``, ...) and
+downtime collide with any earlier run. ``--continue`` instead extends the plant delivered in ``--base-dir`` (the
+baseline plus the increments listed in ``chain.json``) over the next ``--days`` days: ids continue after the delivered
+ones, no new downtime starts while an asset is still down from earlier data, only delivered assets are referenced, and
+no equipment file is written (the plant is unchanged). The run is then recorded in ``chain.json``. See ``README.md``.
+
+Only the Python standard library is used for generation; ``--upload`` also needs databricks-sdk
+(``pip install -e ".[databricks]"``) and ``DATABRICKS_HOST`` / ``DATABRICKS_TOKEN``.
 """
 from __future__ import annotations
 
@@ -87,10 +98,29 @@ SPAN_START = datetime(2026, 3, 15, tzinfo=UTC)  # first operational timestamp
 SPAN_END = datetime(2026, 9, 22, tzinfo=UTC)    # exclusive; end of batch-2 window
 CUTOFF = datetime(2026, 9, 15, tzinfo=UTC)      # batch 1 = [.., CUTOFF), batch 2 = [CUTOFF, SPAN_END)
 
-BATCHES = {
-    1: {"batch_id": "BATCH-20260915-01", "ingestion_ts": datetime(2026, 9, 15, 2, 0, tzinfo=UTC), "stamp": "20260915"},
-    2: {"batch_id": "BATCH-20260922-02", "ingestion_ts": datetime(2026, 9, 22, 2, 0, tzinfo=UTC), "stamp": "20260922"},
-}
+DEFAULT_WINDOW = (SPAN_START, SPAN_END, CUTOFF)
+DEFAULT_SPAN = SPAN_END - SPAN_START
+CONTINUATION_BATCH_DAYS = 7                     # a continuation window's batch 2 covers its last week
+# Tested: 21-90 days pass for every seed tried; 18 fails now and then (a defect pool runs dry), 14 always.
+MIN_CONTINUATION_DAYS, MAX_CONTINUATION_DAYS = 21, 90
+
+
+def make_batches(cutoff: datetime, end: datetime) -> dict[int, dict]:
+    """Delivery batches of a window: batch 1 arrives at ``cutoff`` (history), batch 2 at ``end`` (late
+    events, corrections and new activity). Batch ids and file stamps come from those dates."""
+    return {n: {"batch_id": f"BATCH-{t:%Y%m%d}-0{n}", "ingestion_ts": t.replace(hour=2), "stamp": f"{t:%Y%m%d}"}
+            for n, t in ((1, cutoff), (2, end))}
+
+
+BATCHES = make_batches(CUTOFF, SPAN_END)
+
+# First number issued per id prefix. The defaults start a new plant; a continuation run moves them past the
+# ids already delivered (set_window / generate_data.main).
+DEFAULT_ID_BASE = {"EQ": 10001, "WO": 26001, "MH": 1, "SE": 1}
+ID_BASE = dict(DEFAULT_ID_BASE)
+# Activity-planning scales for windows shorter than the default span (all exactly 1.0 for the default run, which
+# keeps its output byte-identical): share of the usual episodes per asset, start offset and degradation length.
+EPISODE_SCALE = START_SCALE = DEG_SCALE = 1.0
 
 UNKNOWN_EQUIPMENT_ID = "EQ-9999"  # never issued; asset IDs start at EQ-10001
 N_MONITORED_ASSETS = 20           # assets with IoT sensors (feed sensor_events)
@@ -332,6 +362,32 @@ FX_RATES = {("EUR", m): 1.0 for m in _MONTHS}
 FX_RATES.update({("USD", m): r for m, r in zip(_MONTHS, [0.918, 0.921, 0.915, 0.909, 0.912, 0.906, 0.903])})
 FX_RATES.update({("GBP", m): r for m, r in zip(_MONTHS, [1.168, 1.172, 1.165, 1.170, 1.176, 1.173, 1.169])})
 
+DEFAULT_FX_RATES = dict(FX_RATES)
+
+# The Silver work-order notebook (rule LABOR_COST_CONSISTENT, an ERROR rule that stops the whole Silver run) expects
+# labor_cost = labor_hours x LABOR_RATE_EUR / these fixed rates, within 1.5 % for non-EUR rows. They are the mean of
+# the baseline's monthly table. Months the baseline does not cover stay within FX_MONTH_SPREAD of them (no drift).
+SILVER_FIXED_FX = {"EUR": 1.0, "GBP": 1.17, "USD": 0.912}
+SILVER_FX_TOLERANCE = 0.015
+FX_MONTH_SPREAD = 0.008
+
+
+def ensure_fx_months(end: datetime) -> None:
+    """Reset the fictional FX table to its defaults, then extend it to cover ``end``: each new month is the Silver
+    fixed rate +/- ``FX_MONTH_SPREAD`` (deterministic per currency and month), so labor cost stays inside Silver's
+    tolerance however many months a chain of increments covers, and an earlier continuation run in the same
+    process never leaks into the next run."""
+    FX_RATES.clear()
+    FX_RATES.update(DEFAULT_FX_RATES)
+    last_needed = (end - timedelta(seconds=1)).strftime("%Y-%m")
+    while (prev := max(m for _, m in FX_RATES)) < last_needed:
+        y, mo = int(prev[:4]), int(prev[5:])
+        month = f"{y + (mo == 12):04d}-{mo % 12 + 1:02d}"
+        for cur, fixed in SILVER_FIXED_FX.items():
+            FX_RATES[(cur, month)] = fixed if cur == "EUR" else round(
+                fixed * (1 + random.Random(f"fx|{cur}|{month}").uniform(-FX_MONTH_SPREAD, FX_MONTH_SPREAD)), 3)
+
+
 # =============================================================================
 # 3. Column contracts (exact order from data_dictionary.md)
 # =============================================================================
@@ -359,6 +415,11 @@ MAINTENANCE_COLUMNS = [
 # =============================================================================
 # 4. Small helpers
 # =============================================================================
+def number(key: str) -> int:
+    """Numeric part of an id such as ``WO-26001``."""
+    return int(key.rsplit("-", 1)[1])
+
+
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
@@ -386,12 +447,13 @@ def split_evenly(total: int, keys: Iterable) -> dict:
     return {k: base + (1 if i < rem else 0) for i, k in enumerate(keys)}
 
 
-def configure(rows_per_file: int, defect_rate: float) -> None:
+def configure(rows_per_file: int, defect_rate: float, continuation: bool = False) -> None:
     """Set the run size and derive every dependent count (module globals).
 
     Args:
         rows_per_file: rows in each of the four source files (all files get the same count).
         defect_rate: fraction (0-1, e.g. 0.05 = 5 %) of rows per file that carry one injected defect.
+        continuation: the run extends delivered data: the legacy-system history export is not repeated.
 
     Raises:
         ValueError: if a value is outside the range the generator is tested for.
@@ -408,7 +470,7 @@ def configure(rows_per_file: int, defect_rate: float) -> None:
     ROWS_PER_FILE, DEFECT_RATE = rows_per_file, defect_rate
     N_DEFECTS = round(rows_per_file * defect_rate)
     N_EQUIPMENT_VERSIONS = round(rows_per_file * SHARE_EQUIPMENT_VERSIONS)
-    N_LEGACY_ACTIVITIES = round(rows_per_file * SHARE_LEGACY_ACTIVITIES)
+    N_LEGACY_ACTIVITIES = 0 if continuation else round(rows_per_file * SHARE_LEGACY_ACTIVITIES)
     N_MH_CORRECTIONS = round(rows_per_file * SHARE_MH_CORRECTIONS)
     N_WO_PRIORITY_FIXES = round(rows_per_file * SHARE_WO_PRIORITY_FIXES)
     N_LATE_EVENTS = round(rows_per_file * SHARE_LATE_EVENTS)
@@ -417,6 +479,33 @@ def configure(rows_per_file: int, defect_rate: float) -> None:
                                split_evenly(N_DEFECTS, WORK_ORDER_RULES)["closure_before_creation"])
     N_SENSOR_CORRECTIONS = round(SHARE_SENSOR_CORRECTIONS *
                                  split_evenly(N_DEFECTS, SENSOR_RULES)["out_of_range_reading"])
+
+
+def set_window(start: datetime, end: datetime, cutoff: datetime, id_max: dict[str, int] | None = None) -> None:
+    """Set the simulated window (module globals) and where id numbering continues.
+
+    Args:
+        start, end: the window ``[start, end)``; every timestamp the run creates lies inside it.
+        cutoff: boundary between delivery batch 1 and batch 2.
+        id_max: highest ids already issued per prefix (``EQ``/``WO``/``MH``/``SE``); numbering starts after them.
+            ``None`` keeps the defaults of a new plant. Ids always restart from the defaults first, so a
+            previous continuation in the same process never leaks into the next run.
+
+    Raises:
+        ValueError: if ``cutoff`` is not strictly inside the window.
+    """
+    global SPAN_START, SPAN_END, CUTOFF, BATCHES, EPISODE_SCALE, START_SCALE, DEG_SCALE
+    if not start < cutoff < end:
+        raise ValueError("cutoff must lie inside the window")
+    SPAN_START, SPAN_END, CUTOFF = start, end, cutoff
+    BATCHES = make_batches(cutoff, end)
+    frac = (end - start) / DEFAULT_SPAN
+    EPISODE_SCALE = START_SCALE = frac
+    DEG_SCALE = 1.0 if frac >= 1 else 0.4  # failures need 7-45 days of degradation; shorter windows get shorter ones
+    ID_BASE.update(DEFAULT_ID_BASE)
+    if id_max:
+        ID_BASE.update({p: id_max[p] + 1 for p in id_max if p in ID_BASE})
+    ensure_fx_months(end)
 
 
 def weighted_choice(rng: random.Random, weights: dict) -> Any:
@@ -491,7 +580,7 @@ def build_assets(rng: random.Random, n: int) -> list[dict]:
         tag_seq[(spec["prefix"], site)] += 1
         tag = f"{spec['prefix']}-{site[-1]}{tag_seq[(spec['prefix'], site)]:04d}"
         assets.append({
-            "idx": i, "equipment_id": f"EQ-{10001 + i}", "equipment_type": etype, "asset_tag": tag,
+            "idx": i, "equipment_id": f"EQ-{ID_BASE['EQ'] + i}", "equipment_type": etype, "asset_tag": tag,
             "equipment_name": f"{etype} {tag}", "manufacturer": MANUFACTURERS[mfr],
             "model_number": f"{mfr}-{spec['prefix']}{int(power)}{rng.choice('ABCDEFGH')}",
             "serial_number": f"{mfr}{install.year % 100:02d}{i:06d}", "site_code": site,
@@ -504,6 +593,56 @@ def build_assets(rng: random.Random, n: int) -> list[dict]:
             "fla": fla_amps(power), "base_load": rng.uniform(0.6, 0.85),
         })
     return assets
+
+
+SILVER_MAX_POWER_KW = 5000  # MAX_POWER_KW of the Silver equipment notebook
+
+
+def assets_from_base(equipment: dict[str, dict], monitored_ids: set[str]) -> tuple[list[dict], list[dict]]:
+    """Rebuild the asset model from delivered equipment rows (``base_state``): ``(assets, monitored)``.
+
+    The delivered rows are not clean (<= 5 % carry injected defects). Assets whose latest row the Silver
+    equipment notebook quarantines (power below 0 or above ``SILVER_MAX_POWER_KW``, negative vibration limit,
+    decommission before install, no identity) are left out: new activity on them would reference an asset
+    that is not registered in Silver. Defects Silver does not look at (speed, operating hours, line,
+    criticality) are repaired from the equipment-type tables. ``base_load`` is not delivered: it is
+    re-drawn deterministically from the equipment id."""
+    def parse_date(v: str | None) -> date | None:
+        return date.fromisoformat(v) if v else None
+
+    assets: list[dict] = []
+    for eq_id in sorted(equipment, key=lambda k: int(k[3:])):
+        r = equipment[eq_id]
+        spec = EQUIPMENT_TYPES.get(r["equipment_type"])
+        if spec is None or r["site_code"] not in SITES:
+            continue
+        install, decom = parse_date(r["install_date"]), parse_date(r["decommission_date"])
+        if install is None or (decom is not None and decom < install):
+            continue  # Silver: EQ_DATE_LOGIC
+        power = float(r["rated_power_kw"] or 0)
+        if not 0 <= power <= SILVER_MAX_POWER_KW or float(r["rated_vibration_max_mm_s"] or 0) < 0:
+            continue  # Silver: EQ_POWER_BOUNDS, EQ_NEG_VIBRATION
+        if decom is not None and decom >= SPAN_START.date():
+            decom = None  # a decommission date inside the new window is not credible for delivered data
+        lo, hi = spec["power"]
+        if power not in IEC_POWER_KW or not lo <= power <= hi:
+            power = float(min((p for p in IEC_POWER_KW if lo <= p <= hi), key=lambda p: abs(math.log(p / math.sqrt(lo * hi)))))
+        speed = int(float(r["rated_speed_rpm"] or 0))
+        hpd, dpw = int(float(r["operating_hours_per_day"] or 0)), int(float(r["operating_days_per_week"] or 0))
+        a = {
+            "idx": len(assets), "equipment_id": eq_id, "equipment_type": r["equipment_type"],
+            "asset_tag": r["asset_tag"], "equipment_name": r["equipment_name"], "site_code": r["site_code"],
+            "production_line": r["production_line"] if r["production_line"] in LINES else LINES[0],
+            "parent_equipment_id": r["parent_equipment_id"] or None, "install_date": install,
+            "decommission_date": decom, "criticality": r["criticality"] if r["criticality"] in "ABC" else "C",
+            "rated_power_kw": power, "rated_speed_rpm": speed if speed in spec["speeds"] else spec["speeds"][0],
+            "operating_hours_per_day": hpd if hpd in (16, 24) else 24,
+            "operating_days_per_week": dpw if 5 <= dpw <= 7 else 5,
+            "fla": fla_amps(power), "base_load": random.Random(f"base_load|{eq_id}").uniform(0.6, 0.85),
+        }
+        a["limits"] = asset_limits(a)
+        assets.append(a)
+    return assets, [a for a in assets if a["equipment_id"] in monitored_ids]
 
 
 def service_window(a: dict) -> tuple[datetime, datetime]:
@@ -806,14 +945,17 @@ def build_generic_wos(rng: random.Random, pool: list[dict], n_total: int) -> lis
     return wos
 
 
-def remove_overlaps(rng: random.Random, wos: list[dict]) -> None:
-    """Ensure NO accidental downtime overlap per asset (overlaps are injected later on purpose)."""
+def remove_overlaps(rng: random.Random, wos: list[dict], busy_until: dict[str, datetime] | None = None) -> None:
+    """Ensure NO accidental downtime overlap per asset (overlaps are injected later on purpose).
+
+    ``busy_until`` maps an asset to the end of downtime that was already delivered in an earlier run: no new
+    downtime may start before it (a work order that cannot be moved after it loses its downtime)."""
     by_asset = defaultdict(list)
     for w in wos:
         if w["has_dt"]:
             by_asset[w["equipment_id"]].append(w)
     for eq in sorted(by_asset):
-        prev_end = None
+        prev_end = (busy_until or {}).get(eq)
         for w in sorted(by_asset[eq], key=lambda x: x["ds"]):
             if prev_end is not None and w["ds"] < prev_end + hours(1):
                 delta = prev_end + hours(rng.uniform(1, 24)) - w["ds"]
@@ -825,13 +967,19 @@ def remove_overlaps(rng: random.Random, wos: list[dict]) -> None:
             prev_end = w["de"]
 
 
-def plan_monitored_asset(rng: random.Random, a: dict) -> tuple[list[dict], list[dict]]:
+def plan_monitored_asset(rng: random.Random, a: dict,
+                         busy_until: datetime | None = None) -> tuple[list[dict], list[dict]]:
     """Degradation episodes (caught -> predictive WO, missed -> corrective WO), PMs and inspections."""
     spec = EQUIPMENT_TYPES[a["equipment_type"]]
     n_target = {"A": 3, "B": 2, "C": rng.choice([1, 2])}[a["criticality"]]
+    if EPISODE_SCALE != 1.0:  # shorter window: proportionally fewer episodes (fractions become a chance)
+        share = n_target * EPISODE_SCALE
+        n_target = int(share) + (rng.random() < share - int(share))
     limit = SPAN_END - timedelta(days=2)
     episodes: list[dict] = []
-    cursor = SPAN_START + timedelta(days=rng.uniform(3, 35))
+    cursor = SPAN_START + timedelta(days=rng.uniform(3, 35) * START_SCALE)
+    if busy_until is not None:  # still down from an earlier run: nothing starts before it is back up
+        cursor = max(cursor, busy_until + timedelta(days=1))
 
     def make_episode(fm: str, t0: datetime, d: timedelta, caught: bool, repeat: bool) -> dict:
         tf = t0 + d
@@ -860,7 +1008,7 @@ def plan_monitored_asset(rng: random.Random, a: dict) -> tuple[list[dict], list[
     made = 0
     while made < n_target:
         fm = rng.choice(spec["failure_modes"])
-        d = timedelta(days=rng.uniform(7, 45))
+        d = timedelta(days=rng.uniform(7, 45) * DEG_SCALE)
         if cursor + d >= limit:
             break
         ep = make_episode(fm, cursor, d, rng.random() < 0.45, repeat=False)
@@ -870,13 +1018,15 @@ def plan_monitored_asset(rng: random.Random, a: dict) -> tuple[list[dict], list[
         if not ep["caught"] and rng.random() < 0.35:  # temporary fix -> repeat failure < 30 days
             ep["wo"]["temporary_fix"] = True
             t0r = ep["de"] + timedelta(days=rng.uniform(1, 4))
-            dr = timedelta(days=rng.uniform(7, 20))
+            dr = timedelta(days=rng.uniform(7, 20) * DEG_SCALE)
             if t0r + dr < limit:
                 rep = make_episode(fm, t0r, dr, caught=False, repeat=True)
                 episodes.append(rep)
                 cursor = rep["de"] + timedelta(days=rng.uniform(10, 45))
     wos = [e["wo"] for e in episodes]
     busy = [(e["t0"] - timedelta(days=1), e["de"] + timedelta(days=1)) for e in episodes]
+    if busy_until is not None:
+        busy.append((SPAN_START - timedelta(days=1), busy_until + timedelta(days=1)))
 
     def free_slot(t: datetime) -> datetime:
         for _ in range(20):
@@ -1261,7 +1411,7 @@ def build_clean_events(rng: random.Random, monitored: list[dict], episodes: dict
                 "__lim": lim, "__defect": None, "__protected": False, "__late": False,
             })
     events.sort(key=lambda e: (e["__t"], e["sensor"]["sensor_id"]))
-    for i, e in enumerate(events, start=1):
+    for i, e in enumerate(events, start=ID_BASE["SE"]):
         e["event_id"] = f"SE-{i:06d}"
     return events
 
@@ -1376,7 +1526,7 @@ def finalize_sensor_events(rng: random.Random, events: list[dict], plan: dict) -
             e["__defect"] = ("missing_equipment_key", "unknown equipment_id EQ-9999 (unregistered device)")
 
     # --- near duplicates (gateway re-send with a new event_id) -------------
-    next_num = len(events) + 1
+    next_num = ID_BASE["SE"] + len(events)
     near = []
     for e in take(rng, clean, plan["duplicate_sensor_event_near"], used, "near duplicates"):
         d = copy.deepcopy(strip_internal(e))
@@ -1517,7 +1667,7 @@ def build_work_order_rows(rng: random.Random, wos: list[dict], plan: dict) -> li
 def build_maintenance_rows(rng: random.Random, acts: list[dict], plan: dict) -> list[dict]:
     acts.sort(key=lambda a: (a["start"], a["wo"]["id"] if a["wo"] else ""))
     rows = []
-    for i, a in enumerate(acts, start=1):
+    for i, a in enumerate(acts, start=ID_BASE["MH"]):
         wo = a["wo"]
         r = {
             "maintenance_id": f"MH-{i:05d}", "work_order_id": wo["id"] if wo else None,
@@ -1715,7 +1865,7 @@ def write_reference_files(out: Path) -> None:
 # =============================================================================
 # 11. Self-check (re-derives defects from the written files)
 # =============================================================================
-def self_check(out: Path, manifest: list[dict], names: tuple[str, str, str, str]) -> list[str]:
+def self_check(out: Path, manifest: list[dict], names: tuple[str | None, str, str, str]) -> list[str]:
     EQ, WO, MH, SE = names
     msgs, ok = [], True
     m_counts = Counter((m["file"], m["rule"]) for m in manifest)
@@ -1727,10 +1877,9 @@ def self_check(out: Path, manifest: list[dict], names: tuple[str, str, str, str]
     def ts(s: str) -> datetime | None:
         return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC) if s else None
 
-    eq, wo, mh = read(EQ), read(WO), read(MH)
+    eq, wo, mh = (read(EQ) if EQ else []), read(WO), read(MH)
     se = json.loads((out / SE).read_text(encoding="utf-8"))
-    for name, rows in [(EQ, eq), (WO, wo), (MH, mh),
-                       (SE, se)]:
+    for name, rows in ([(EQ, eq)] if EQ else []) + [(WO, wo), (MH, mh), (SE, se)]:
         n_def = sum(v for (f, _), v in m_counts.items() if f == name)
         good = len(rows) == ROWS_PER_FILE and n_def == N_DEFECTS
         ok &= good
@@ -1771,11 +1920,12 @@ def self_check(out: Path, manifest: list[dict], names: tuple[str, str, str, str]
     checks.append(("maintenance missing/unknown equipment_id",
                    sum(1 for r in mh if r["equipment_id"] in ("", UNKNOWN_EQUIPMENT_ID)),
                    m_counts[(MH, "missing_equipment_key")]))
-    checks.append(("equipment null equipment_id", sum(1 for r in eq if not r["equipment_id"]),
-                   m_counts[(EQ, "missing_equipment_key")]))
-    checks.append(("equipment decommission < install",
-                   sum(1 for r in eq if r["decommission_date"] and r["decommission_date"] < r["install_date"]),
-                   m_counts[(EQ, "closure_before_creation")]))
+    if EQ:
+        checks.append(("equipment null equipment_id", sum(1 for r in eq if not r["equipment_id"]),
+                       m_counts[(EQ, "missing_equipment_key")]))
+        checks.append(("equipment decommission < install",
+                       sum(1 for r in eq if r["decommission_date"] and r["decommission_date"] < r["install_date"]),
+                       m_counts[(EQ, "closure_before_creation")]))
     raw = Counter(json.dumps(e, sort_keys=True) for e in se)
     checks.append(("sensor exact duplicates", sum(c - 1 for c in raw.values()),
                    m_counts[(SE, "duplicate_sensor_event_exact")]))
@@ -1805,19 +1955,71 @@ def self_check(out: Path, manifest: list[dict], names: tuple[str, str, str, str]
     return msgs
 
 
+def continuation_check(base: Any, wo_rows: list[dict], mh_rows: list[dict], se_rows: list[dict]) -> list[str]:
+    """Verify a continuation run against the data it extends; raises on any conflict.
+
+    Checks: every new id lies after the delivered ones; new rows only reference assets of the delivered plant
+    (or carry a declared missing-key defect); no new work order starts before the window; and no new downtime
+    interval overlaps downtime that was already delivered for the same asset."""
+    problems, msgs = [], []
+    window_start = SPAN_START
+    for label, rows, key, prefix in (("work orders", wo_rows, "work_order_id", "WO"),
+                                     ("maintenance", mh_rows, "maintenance_id", "MH"),
+                                     ("sensor events", se_rows, "event_id", "SE")):
+        low = min(number(r[key]) for r in rows)
+        if low <= base.id_max[prefix]:
+            problems.append(f"{label}: id {prefix}-{low} is not after the delivered maximum {base.id_max[prefix]}")
+    fleet = set(base.equipment) | {r for r in base.monitored}
+    unknown = {r["equipment_id"] for rows in (wo_rows, mh_rows, se_rows) for r in rows
+               if r["equipment_id"] not in (None, UNKNOWN_EQUIPMENT_ID) and r["equipment_id"] not in fleet}
+    if unknown:
+        problems.append(f"rows reference assets outside the delivered plant: {sorted(unknown)[:5]}")
+    early = [r["work_order_id"] for r in wo_rows if r["record_version"] == 1 and r["created_ts"] < window_start]
+    if early:
+        problems.append(f"{len(early)} new work orders are created before the window starts ({early[:3]})")
+
+    latest: dict[str, dict] = {}
+    for r in wo_rows:
+        if r["work_order_id"] not in latest or r["record_version"] >= latest[r["work_order_id"]]["record_version"]:
+            latest[r["work_order_id"]] = r
+    conflicts = 0
+    for r in latest.values():
+        eq, s, e = r["equipment_id"], r["downtime_start_ts"], r["downtime_end_ts"]
+        if eq in (None, UNKNOWN_EQUIPMENT_ID) or s is None:
+            continue
+        for bs, be in base.downtime.get(eq, []):
+            if s < (be or SPAN_END) and bs < (e or SPAN_END):
+                conflicts += 1
+                break
+    if conflicts:
+        problems.append(f"{conflicts} new downtime intervals overlap downtime delivered earlier for the same asset")
+    if problems:
+        raise AssertionError("Continuation check failed:\n  " + "\n  ".join(problems))
+    msgs += ["", "  continuation check (against delivered data):",
+             f"    ids continue after WO-{base.id_max['WO']}, MH-{base.id_max['MH']}, SE-{base.id_max['SE']}: OK",
+             "    no reference outside the delivered plant, no downtime overlap with delivered downtime: OK"]
+    return msgs
+
+
 # =============================================================================
 # 12. Orchestration
 # =============================================================================
-def source_file_names(stamp: str) -> tuple[str, str, str, str]:
-    """Timestamped names of the four source files, e.g. ``equipment_20261003_101500.csv``."""
-    return (f"equipment_{stamp}.csv", f"work_orders_{stamp}.csv",
+def source_file_names(stamp: str, continuation: bool = False) -> tuple[str | None, str, str, str]:
+    """Timestamped names of the source files, e.g. ``equipment_20261003_101500.csv``.
+
+    A continuation run has no equipment file (the plant is unchanged): its name is ``None``."""
+    return (None if continuation else f"equipment_{stamp}.csv", f"work_orders_{stamp}.csv",
             f"maintenance_history_{stamp}.csv", f"sensor_events_{stamp}.json")
 
 
-def generate(out: Path, log_dir: Path, seed: int, stamp: str) -> None:
-    """Write the four source files to ``out`` and everything else (manifest, summary, batches,
-    reference, config) to ``log_dir``."""
-    EQ, WO, MH, SE = names = source_file_names(stamp)
+def generate(out: Path, log_dir: Path, seed: int, stamp: str, base: Any = None) -> dict:
+    """Write the source files to ``out`` and everything else (manifest, summary, batches, reference,
+    config) to ``log_dir``; returns the generation summary.
+
+    Without ``base`` a new plant is simulated (four files). With ``base`` (a ``base_state.BaseState``) the
+    delivered plant is extended over the window set by ``set_window``: no equipment file, ids continue after
+    the delivered ones and no new downtime overlaps what is already delivered."""
+    EQ, WO, MH, SE = names = source_file_names(stamp, continuation=base is not None)
     rng = random.Random(seed)
     eq_plan = split_evenly(N_DEFECTS, EQUIPMENT_RULES)
     wo_plan = split_evenly(N_DEFECTS, WORK_ORDER_RULES)
@@ -1825,20 +2027,27 @@ def generate(out: Path, log_dir: Path, seed: int, stamp: str) -> None:
     se_plan = split_evenly(N_DEFECTS, SENSOR_RULES)
 
     # --- equipment -----------------------------------------------------------
-    n_assets = ROWS_PER_FILE - N_EQUIPMENT_VERSIONS - eq_plan["duplicate_record"]
-    assets = build_assets(rng, n_assets)
-    monitored = choose_monitored(rng, assets)
-    mon_idx = {a["idx"] for a in monitored}
-    orphan_pool = [a for a in assets if a["idx"] not in mon_idx and a["decommission_date"] is None]
-    orphans = {a["idx"] for a in rng.sample(orphan_pool, eq_plan["missing_equipment_key"])}
-    assign_parents(rng, assets, excluded=orphans)
-    for a in assets:
-        a["limits"] = asset_limits(a)
+    busy: dict[str, datetime] = {}  # asset -> end of downtime delivered earlier (nothing new may start before)
+    if base is None:
+        n_assets = ROWS_PER_FILE - N_EQUIPMENT_VERSIONS - eq_plan["duplicate_record"]
+        assets = build_assets(rng, n_assets)
+        monitored = choose_monitored(rng, assets)
+        mon_idx = {a["idx"] for a in monitored}
+        orphan_pool = [a for a in assets if a["idx"] not in mon_idx and a["decommission_date"] is None]
+        orphans = {a["idx"] for a in rng.sample(orphan_pool, eq_plan["missing_equipment_key"])}
+        assign_parents(rng, assets, excluded=orphans)
+        for a in assets:
+            a["limits"] = asset_limits(a)
+    else:  # the plant is the delivered one: nothing new is built, only its activity continues
+        assets, monitored = assets_from_base(base.equipment, base.monitored)
+        mon_idx, orphans = {a["idx"] for a in monitored}, set()
+        busy = {eq: end for eq in base.downtime if (end := base.busy_until(eq)) is not None}
+        busy.update({eq: SPAN_END for eq in base.running()})  # still down: blocked for the whole window
 
     # --- monitored assets: degradation episodes + their work orders ---------
     episodes, mon_wos = {}, []
     for a in monitored:
-        eps, wos = plan_monitored_asset(rng, a)
+        eps, wos = plan_monitored_asset(rng, a, busy.get(a["equipment_id"]))
         episodes[a["equipment_id"]] = eps
         mon_wos += wos
     windows = {a["equipment_id"]: sorted([w for w in mon_wos if w["has_dt"] and w["asset"] is a],
@@ -1847,7 +2056,7 @@ def generate(out: Path, log_dir: Path, seed: int, stamp: str) -> None:
     # --- generic work orders -------------------------------------------------
     pool = [a for a in assets if a["idx"] not in mon_idx and a["idx"] not in orphans]
     gen_wos = build_generic_wos(rng, pool, WO_CANDIDATES - len(mon_wos))
-    remove_overlaps(rng, gen_wos)
+    remove_overlaps(rng, gen_wos, busy)
 
     # --- sensor readings (clean) and links to work orders -------------------
     n_clean = (ROWS_PER_FILE - se_plan["duplicate_sensor_event_exact"]
@@ -1871,7 +2080,7 @@ def generate(out: Path, log_dir: Path, seed: int, stamp: str) -> None:
 
     wos.sort(key=lambda w: (w["created"], w["equipment_id"], w["wo_type"]))
     for i, w in enumerate(wos):
-        w["id"] = f"WO-{26001 + i}"
+        w["id"] = f"WO-{ID_BASE['WO'] + i}"
         w["description"] = describe(w)
     for i, w in enumerate(wos):
         if w["cancel_at"] is not None:
@@ -1931,7 +2140,7 @@ def generate(out: Path, log_dir: Path, seed: int, stamp: str) -> None:
     acts += build_legacy_activities(rng, pool, N_LEGACY_ACTIVITIES)
 
     # --- rows -----------------------------------------------------------------
-    eq_rows = build_equipment_rows(rng, assets, orphans, mon_idx, eq_plan)
+    eq_rows = build_equipment_rows(rng, assets, orphans, mon_idx, eq_plan) if base is None else []
     wo_rows = build_work_order_rows(rng, wos, wo_plan)
     mh_rows = build_maintenance_rows(rng, acts, mh_plan)
     se_rows = finalize_sensor_events(rng, events, se_plan)
@@ -1939,8 +2148,8 @@ def generate(out: Path, log_dir: Path, seed: int, stamp: str) -> None:
     # --- write ------------------------------------------------------------------
     out.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
-    files = [(EQ, EQUIPMENT_COLUMNS, eq_rows), (WO, WORK_ORDER_COLUMNS, wo_rows),
-             (MH, MAINTENANCE_COLUMNS, mh_rows)]
+    files = ([(EQ, EQUIPMENT_COLUMNS, eq_rows)] if EQ else []) + [(WO, WORK_ORDER_COLUMNS, wo_rows),
+                                                                   (MH, MAINTENANCE_COLUMNS, mh_rows)]
     manifest = []
     for name, cols, rows in files:
         write_csv(out / name, cols, rows)
@@ -1960,13 +2169,18 @@ def generate(out: Path, log_dir: Path, seed: int, stamp: str) -> None:
 
     # --- summary ----------------------------------------------------------------
     report = self_check(out, manifest, names)
+    if base is not None:
+        report += continuation_check(base, wo_rows, mh_rows, se_rows)
     final_states = Counter(wo_state(w, SPAN_END)["status"] for w in wos)
     summary = {
-        "run_timestamp": stamp, "files": list(names), "output_dir": str(out.resolve()),
+        "run_timestamp": stamp, "files": [n for n in names if n], "output_dir": str(out.resolve()),
+        "continuation": base is not None, "window": [iso(SPAN_START), iso(SPAN_END)],
+        "id_max": {"WO": max(number(r["work_order_id"]) for r in wo_rows),
+                   "MH": max(number(r["maintenance_id"]) for r in mh_rows),
+                   "SE": max(number(e["event_id"]) for e in se_rows)},
         "seed": seed, "span_start": iso(SPAN_START), "span_end_exclusive": iso(SPAN_END), "batch_cutoff": iso(CUTOFF),
         "rows_per_file": ROWS_PER_FILE, "defect_rate": DEFECT_RATE,
-        "defect_plan": {EQ: eq_plan, WO: wo_plan,
-                        MH: mh_plan, SE: se_plan},
+        "defect_plan": ({EQ: eq_plan} if EQ else {}) | {WO: wo_plan, MH: mh_plan, SE: se_plan},
         "batch_rows": {name: Counter(r["batch_id"] for r in rows) for name, _, rows in files} |
                       {SE: Counter(e["_metadata"]["batch_id"] for e in se_rows)},
         "assets": len(assets), "iot_monitored_assets": sorted(a["equipment_id"] for a in monitored),
@@ -1983,6 +2197,29 @@ def generate(out: Path, log_dir: Path, seed: int, stamp: str) -> None:
           f"| predictive with trigger={summary['predictive_with_trigger']}")
     print(f"Source files written to {out.resolve()}")
     print(f"Manifest, summary, batches, reference and config written to {log_dir.resolve()}")
+    return summary
+
+
+def load_base_state(base_dir: Path) -> Any:
+    """``base_state.load_base`` (a sibling module: import it whether this file runs as a script or as a package)."""
+    try:
+        from . import base_state
+    except ImportError:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import base_state
+    return base_state, base_state.load_base(base_dir)
+
+
+def upload_generated_run(out: Path, stamp: str, folder: str | None, force: bool = False) -> None:
+    """Upload exactly the run just written (``stamp``), even if ``out`` holds older runs."""
+    sys.path.insert(0, str(DATA_DIR / "upload"))  # run as a script: don't depend on the package being installed
+    import upload_to_databricks  # lazy: generation itself stays standard-library only
+    print(f"\nUploading run {stamp} to Databricks...")
+    try:
+        upload_to_databricks.upload_run(out, stamp, folder=folder, force=force)
+    except (ValueError, RuntimeError) as exc:
+        sys.exit(f"Upload failed (the files are still in {out.resolve()}): {exc}")
+    print("Upload done.")
 
 
 def main() -> None:
@@ -1993,9 +2230,9 @@ def main() -> None:
     parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR,
                         help="parent of the per-run log folder <log-dir>/<timestamp>/ that receives the defect "
                              "manifest, generation summary, batches, reference and config (default: src/data/.log)")
-    parser.add_argument("--rows-per-file", type=int, default=DEFAULT_ROWS_PER_FILE, metavar="N",
-                        help=f"rows in EACH of the four source files, {MIN_ROWS_PER_FILE:,}-{MAX_ROWS_PER_FILE:,} "
-                             f"(default: {DEFAULT_ROWS_PER_FILE:,})")
+    parser.add_argument("--rows-per-file", type=int, default=None, metavar="N",
+                        help=f"rows in EACH of the source files, {MIN_ROWS_PER_FILE:,}-{MAX_ROWS_PER_FILE:,} "
+                             f"(default: {DEFAULT_ROWS_PER_FILE:,}; with --continue: scaled from the baseline to --days)")
     parser.add_argument("--defect-rate", type=float, default=DEFAULT_DEFECT_RATE, metavar="FRACTION",
                         help=f"share of rows per file that carry one injected defect, 0-{MAX_DEFECT_RATE} "
                              f"as a fraction: 0.05 = 5 %% (default: {DEFAULT_DEFECT_RATE})")
@@ -2005,9 +2242,46 @@ def main() -> None:
     seed_group.add_argument("--no-seed", action="store_true",
                             help="do not use a fixed seed: draw a fresh random one so every run produces "
                                  "new data. The seed used is printed and saved in generation_summary.json")
+    parser.add_argument("--upload", action="store_true",
+                        help="after generating, upload the four new source files to the Databricks volume "
+                             "(see src/data/upload/upload_to_databricks.py)")
+    parser.add_argument("--folder", choices=("datasets", "test_datasets"),
+                        help="with --upload: volume folder under /Volumes/data2026acc123456/team3 "
+                             "(default: datasets, or env DATABRICKS_VOLUME_PATH)")
+    parser.add_argument("--force-upload", action="store_true",
+                        help="with --upload: skip the check that the volume holds no conflicting runs")
+    parser.add_argument("--continue", dest="continue_run", action="store_true",
+                        help="do not build a new plant: continue the delivered one (the baseline and increments "
+                             "listed in <base-dir>/chain.json) with a new window of activity. Ids continue, no new "
+                             "downtime overlaps delivered downtime, and there is no equipment file")
+    parser.add_argument("--days", type=int, default=28, metavar="N",
+                        help=f"with --continue: length of the new window, {MIN_CONTINUATION_DAYS}-"
+                             f"{MAX_CONTINUATION_DAYS} days (default: 28)")
+    parser.add_argument("--base-dir", type=Path, default=DEFAULT_OUT_DIR,
+                        help="with --continue: folder with chain.json and the delivered files (default: src/data/raw)")
     args = parser.parse_args()
+    if (args.folder or args.force_upload) and not args.upload:
+        parser.error("--folder and --force-upload only apply together with --upload")
+    base, base_mod = None, None
+    if args.continue_run:
+        if not MIN_CONTINUATION_DAYS <= args.days <= MAX_CONTINUATION_DAYS:
+            parser.error(f"--days must be between {MIN_CONTINUATION_DAYS} and {MAX_CONTINUATION_DAYS}")
+        try:
+            base_mod, base = load_base_state(args.base_dir)
+        except FileNotFoundError as exc:
+            parser.error(str(exc))
+        start = base.window_end
+        end = start + timedelta(days=args.days)
+        set_window(start, end, end - timedelta(days=CONTINUATION_BATCH_DAYS), base.id_max)
+        rows = args.rows_per_file or max(MIN_ROWS_PER_FILE,
+                                         round(base.baseline_rows_per_file * args.days / base.baseline_days))
+        print(f"Continuing the delivered plant ({len(base.equipment):,} assets, {len(base.monitored)} monitored) "
+              f"over {start:%Y-%m-%d} .. {end:%Y-%m-%d}; ids continue after WO-{base.id_max['WO']}, "
+              f"MH-{base.id_max['MH']}, SE-{base.id_max['SE']}")
+    else:
+        rows = args.rows_per_file or DEFAULT_ROWS_PER_FILE
     try:
-        configure(args.rows_per_file, args.defect_rate)
+        configure(rows, args.defect_rate, continuation=base is not None)
     except ValueError as exc:
         parser.error(str(exc))
 
@@ -2022,7 +2296,7 @@ def main() -> None:
         print(f"Generating {ROWS_PER_FILE:,} rows per file, defect rate {DEFECT_RATE:.1%} "
               f"({N_DEFECTS:,} defective rows per file), seed {seed} [{mode}]")
         try:
-            generate(args.out, log_dir, seed, stamp)
+            summary = generate(args.out, log_dir, seed, stamp, base)
         except RuntimeError as exc:
             print(f"  seed {seed} failed: {exc}", file=sys.stderr)
             if attempt == attempts:
@@ -2031,6 +2305,18 @@ def main() -> None:
         if args.no_seed:
             print(f"Seed used: {seed} (re-run with --seed {seed} --rows-per-file {ROWS_PER_FILE} "
                   f"--defect-rate {DEFECT_RATE} to reproduce this exact data set)")
+        if base is not None:
+            if args.out.resolve() == args.base_dir.resolve():
+                base_mod.append_increment(args.base_dir, {
+                    "tag": stamp, "window": summary["window"], "rows_per_file": ROWS_PER_FILE, "seed": seed,
+                    "id_max": summary["id_max"]})
+                print(f"Recorded increment {stamp} in {args.base_dir / base_mod.CHAIN_FILE}: the next --continue "
+                      f"starts after {summary['window'][1]}")
+            else:
+                print(f"NOTE: --out differs from --base-dir, so {base_mod.CHAIN_FILE} was not updated and the next "
+                      f"--continue will not see this run")
+        if args.upload:
+            upload_generated_run(args.out, stamp, args.folder, args.force_upload)
         return
 
 
