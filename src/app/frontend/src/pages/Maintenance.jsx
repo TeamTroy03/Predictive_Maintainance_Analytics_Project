@@ -14,6 +14,8 @@ const STATUS_FILTERS = [
 ]
 const TYPE_COLORS = { Preventive: '#7e00c9', Predictive: '#a45ad9', Corrective: '#d1273f' }
 const AXIS_TICK = { fontSize: 11, fill: '#4b5563' }
+// Display only: thousands separators, at most 2 decimals ("150,000 h", "6.5 h"); the data is not rounded
+const fmtHours = (v) => (v == null ? '–' : `${Number(v).toLocaleString('en-GB', { maximumFractionDigits: 2 })} h`)
 const fmtEuroM = (v) => `€${(v / 1e6).toLocaleString('en-GB', { minimumFractionDigits: 1, maximumFractionDigits: 2 })}M`
 
 export default function Maintenance() {
@@ -43,12 +45,13 @@ export default function Maintenance() {
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
         <Card title="MTBF vs MTTR" subtitle="Monthly trend" className="lg:col-span-2">
           <ResponsiveContainer width="100%" height={240}>
-            <ComposedChart data={monthly} margin={{ top: 5, right: 0, left: -10, bottom: 0 }}>
+            <ComposedChart data={monthly} margin={{ top: 5, right: 5, left: 5, bottom: 0 }}>
               <CartesianGrid stroke="#f0f0f0" vertical={false} />
               <XAxis dataKey="month" tick={AXIS_TICK} />
-              <YAxis yAxisId="mtbf" tick={AXIS_TICK} unit="h" />
-              <YAxis yAxisId="mttr" orientation="right" tick={AXIS_TICK} unit="h" />
-              <Tooltip contentStyle={{ fontSize: 12 }} />
+              {/* Fixed widths: "150,000 h" must fit inside the card (a negative margin used to clip it) */}
+              <YAxis yAxisId="mtbf" tick={AXIS_TICK} tickFormatter={fmtHours} width={72} />
+              <YAxis yAxisId="mttr" orientation="right" tick={AXIS_TICK} tickFormatter={fmtHours} width={52} />
+              <Tooltip formatter={(v, name) => [fmtHours(v), name.replace(' (h)', '')]} contentStyle={{ fontSize: 12 }} />
               {/* Legend text in dark grey: by default it takes the (light) series colour */}
               <Legend wrapperStyle={{ fontSize: 12 }} formatter={(name) => <span style={{ color: '#1f2937' }}>{name}</span>} />
               <Bar yAxisId="mtbf" dataKey="mtbf_h" name="MTBF (h)" fill="#8b3fd0" isAnimationActive={false} />
@@ -94,7 +97,7 @@ export function WorkOrderTable({ rows, showAsset = true }) {
     { key: 'status', label: 'Status', render: (w) => <StatusBadge status={w.status} /> },
     showTechnician && { key: 'technician', label: 'Technician' },
     { key: 'due', label: 'Due', render: (w) => fmtDate(w.due) },
-    { key: 'downtime_h', label: 'Downtime', align: 'right', render: (w) => (w.downtime_h ? `${w.downtime_h} h` : '–') },
+    { key: 'downtime_h', label: 'Downtime', align: 'right', render: (w) => (w.downtime_h ? `${Number(w.downtime_h).toFixed(2)} h` : '–') },
     { key: 'cost', label: 'Cost', align: 'right', render: (w) => fmtEuro(w.cost) },
   ].filter(Boolean)
   return <Table rows={rows} columns={columns} empty="No work orders" />

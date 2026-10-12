@@ -125,10 +125,13 @@ def test_sensor_series_of_unknown_asset_is_404():
 # ---------------------------------------------------------------- alarms
 def test_alarms_get_severity_message_and_no_invented_fields():
     row = {"event_ts": TS, "equipment_id": "EQ-18463", "sensor_id": "EQ-18463-VIB01", "sensor_type": "vibration",
-           "reading_value": 9.1, "canonical_unit": "mm/s", "alarm_state": "alarm", "alarm_code": "VIB_HIGH"}
-    db = FakeDB([("is_alarm = TRUE", [row, {**row, "alarm_state": "warning", "alarm_code": None, "sensor_type": "load"}])])
+           "reading_value": 9.1, "canonical_unit": "mm/s", "alarm_state": "alarm", "alarm_code": "VIB_HIGH",
+           "is_cleared": False}
+    db = FakeDB([("is_alarm = TRUE", [row, {**row, "alarm_state": "warning", "alarm_code": None, "sensor_type": "load",
+                                            "is_cleared": True}])])
     critical, warning = assets.list_alarms(db, "EQ-18463", 50)
     assert (critical.severity, warning.severity) == ("critical", "warning")
+    assert (critical.state, warning.state) == ("active", "cleared")  # cleared = a later normal reading exists
     assert critical.message == "Vibration high (alarm level)" and warning.message == "Load warning"
     assert critical.id.startswith("EQ-18463-VIB01|")  # sensor + reading time: Gold has no alarm id
     assert critical.threshold is None and critical.acknowledged is False and critical.time.tzinfo is UTC

@@ -15,7 +15,7 @@ const PAGE_SIZE = 50
 const SORTS = [
   { value: 'maintenance', label: 'Time since last maintenance', subtitle: 'Longest since last maintenance first · assets with no maintenance record last' },
   { value: 'alarm', label: 'Last alarm date', subtitle: 'Most recent alarm first · assets that never alarmed last' },
-  { value: 'status', label: 'Status', subtitle: 'Critical, then warning, then offline, then operational' },
+  { value: 'status', label: 'Status', subtitle: 'Critical, then warning, then operational, then offline' },
 ]
 
 const Muted = ({ children, title }) => <span title={title} className="text-gray-400">{children}</span>

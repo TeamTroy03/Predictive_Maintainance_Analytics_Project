@@ -255,6 +255,9 @@ class Alarm(BaseModel):
     unit: str | None
     time: datetime
     acknowledged: bool = Field(False, description="Gold keeps no acknowledgements: always false")
+    state: Literal["active", "cleared"] = Field(
+        "active", description="Derived: cleared once the sensor has a later normal reading"
+    )
 
 
 class WorkOrderItem(BaseModel):

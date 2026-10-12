@@ -122,12 +122,11 @@ KPI_DOCS = format_kpi_docs(KPIS)
 
 
 def plan_text(question: str, p: Plan) -> str:
-    """Full plan text, then a plain-language summary for the business user."""
+    """Plain-language plan shown to the user. The technical steps stay in State["plan"] and the plan_created log."""
     full = f"Approach: {p.approach}\n" + "\n".join(
         f"{i}. {s.tool}({json.dumps(s.args)}) - {s.purpose}" for i, s in enumerate(p.steps, 1)
     )
-    summary = (SUMMARY_PROMPT | llm).invoke({"question": question, "plan": full}).content
-    return f"{full}\n-------------\n{summary}"
+    return (SUMMARY_PROMPT | llm).invoke({"question": question, "plan": full}).content
 
 
 def plan(question: str, feedback: str | None = None) -> Plan:
@@ -231,8 +230,8 @@ def execute(question: str, p: Plan, run_id: str = "-") -> tuple[AssistantAnswer,
         answer.evidence = lines  # exact figures from the tools, not LLM-written
     if bad := unverified_numbers(answer, results):
         answer.limitations.append(f"These numbers were not found in the tool results, please verify: {', '.join(bad)}.")
-    log_event("answer_ready", run_id, unverified_numbers=bad, limitations=len(answer.limitations),
-              duration_s=_since(start))
+    log_event("answer_ready", run_id, unverified_numbers=bad, limitations=answer.limitations,
+              source_measure=answer.source_measure, filters=answer.filters, duration_s=_since(start))
     trace = [{"tool": c["name"], "args": c["args"], "ok": ok, "result": r} for c, ok, r in zip(calls, oks, results)]
     return answer, trace
 

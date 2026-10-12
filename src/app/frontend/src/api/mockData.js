@@ -246,11 +246,7 @@ export async function askAgent(question) {
   return {
     status: 'awaiting_approval',
     run_id: runId,
-    plan: `Approach: answer the question from the Gold KPI tables.
-1. get_kpi: look up the relevant KPI for the requested period.
-2. query_kpi_table: fetch the supporting detail rows.
-
-(Demo plan: connect FastAPI to get the real agent.)`,
+    plan: `We will look up the relevant KPI for the requested period. Then we will review the supporting detail records to explain the result. (Demo plan: connect FastAPI to get the real agent.)`,
     result: null,
   }
 }

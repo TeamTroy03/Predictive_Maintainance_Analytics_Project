@@ -217,23 +217,9 @@ function PlanBubble({ message, busy, onDecide }) {
   )
 }
 
-// What the answer is based on: measure, filters, tools used, limitations
+// Only the grounding warning is shown; sources, SQL, filters, tools and limitations stay in the API
+// response (evidence, source_measure, filters, limitations) and in the agent log, not in the UI.
 function AnswerDetails({ result }) {
-  const filters = Object.entries(result.filters ?? {}).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
-  const tools = [...new Set((result.evidence ?? []).map((e) => `${e.tool}${e.status === 'error' ? ' (failed)' : ''}`))]
-  return (
-    <div className="mt-2 space-y-1 border-t border-line pt-1.5 text-[11px] text-gray-500">
-      {!result.grounded && <div className="font-medium text-warn">Not grounded in data: treat this answer with caution.</div>}
-      {result.source_measure && <div>Source / measure: {result.source_measure}</div>}
-      {filters.length > 0 && <div>Filters: {filters.join('; ')}</div>}
-      {tools.length > 0 && <div>Tools used: {tools.join(', ')}</div>}
-      {result.limitations?.length > 0 && (
-        <ul className="list-disc pl-4">
-          {result.limitations.map((l, i) => (
-            <li key={i}>{l}</li>
-          ))}
-        </ul>
-      )}
-    </div>
-  )
+  if (result.grounded) return null
+  return <div className="mt-2 text-xs font-medium text-warn">Not grounded in data: treat this answer with caution.</div>
 }

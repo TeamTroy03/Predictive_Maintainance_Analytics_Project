@@ -32,7 +32,7 @@ WARNING_FROM = 0.90
 OFFLINE_STATUSES = ("standby", "decommissioned")
 STATUS_PARAMS = {"operational": OPERATIONAL_FROM, "warning": WARNING_FROM}
 
-_STATUS_ORDER = "CASE asset_status WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 WHEN 'offline' THEN 2 ELSE 3 END"
+_STATUS_ORDER = "CASE asset_status WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 WHEN 'offline' THEN 3 ELSE 2 END"
 _ASSET_ID = "equipment_id = :equipment_id"
 
 
@@ -92,7 +92,7 @@ def list_assets(
     page: int = 1,
     page_size: int = 50,
 ) -> AssetPage:
-    """Most urgent first (critical, warning, offline, operational), then by id."""
+    """Most urgent first (critical, warning, operational, offline), then by id."""
     where, params = [], dict(STATUS_PARAMS)
     if status:
         where.append("asset_status = :status")
@@ -215,17 +215,24 @@ _ALARM_NAMES = {
 
 
 def list_alarms(db: GoldDB, equipment_id: str | None = None, limit: int = 200) -> list[Alarm]:
-    """Alarm readings, newest first. Gold keeps no acknowledged/cleared state, so every alarm is listed as open."""
+    """Alarm readings, newest first. Gold keeps no acknowledgements, so the state is derived: an alarm is cleared
+    once its sensor has a later normal reading, active until then."""
     where, params = ["is_alarm = TRUE", "equipment_key <> -1"], {}
     if equipment_id:
         where.append(_ASSET_ID)
         params["equipment_id"] = equipment_id
     rows = db.query(
         f"""
-        SELECT event_ts, equipment_id, sensor_id, sensor_type, reading_value, canonical_unit, alarm_state, alarm_code
-        FROM {db.table("fact_sensor_reading")}
-        WHERE {" AND ".join(where)}
-        ORDER BY event_ts DESC
+        SELECT a.event_ts, a.equipment_id, a.sensor_id, a.sensor_type, a.reading_value, a.canonical_unit,
+               a.alarm_state, a.alarm_code, COALESCE(n.last_normal > a.event_ts, FALSE) AS is_cleared
+        FROM (SELECT * FROM {db.table("fact_sensor_reading")} WHERE {" AND ".join(where)}) a
+        LEFT JOIN (
+            SELECT sensor_id, MAX(event_ts) AS last_normal
+            FROM {db.table("fact_sensor_reading")}
+            WHERE alarm_state = 'normal'
+            GROUP BY sensor_id
+        ) n ON n.sensor_id = a.sensor_id
+        ORDER BY a.event_ts DESC
         LIMIT {limit}
         """,
         params,
@@ -246,6 +253,7 @@ def list_alarms(db: GoldDB, equipment_id: str | None = None, limit: int = 200) -
                 value=r["reading_value"],
                 unit=r["canonical_unit"],
                 time=ts,
+                state="cleared" if r["is_cleared"] else "active",
             )
         )
     return alarms

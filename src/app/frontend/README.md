@@ -61,7 +61,7 @@ All times are ISO 8601 strings. Status values: `operational | warning | critical
 | GET | `/api/assets/{id}/sensors?range=1h\|24h\|7d` | `{ asset_id, range, sensors: [{ id, name, unit, warn, crit, lower_is_bad, points: [{ t, value, anomaly }] }] }` (use `value: null` for missing data; keep a few hundred points per sensor) |
 | GET | `/api/maintenance/summary` | `{ kpis: { mtbf_h, mttr_h, overdue_work_orders, maintenance_cost_eur, repeat_failure_pct, planned_pct }, monthly: [{ month, mtbf_h, mttr_h, cost_eur }], cost_by_type: [{ type, cost_eur }] }` |
 | GET | `/api/maintenance/work-orders?status=&asset_id=` | `[{ id, asset_id, asset_name, type, status (open\|overdue\|completed), priority, title, technician, opened, due, completed, downtime_h, cost }]` |
-| GET | `/api/alarms?asset_id=` | `[{ id, asset_id, asset_name, severity (critical\|warning\|info), sensor, message, value, threshold, unit, time, acknowledged }]` |
+| GET | `/api/alarms?asset_id=` | `[{ id, asset_id, asset_name, severity (critical\|warning\|info), sensor, message, value, threshold, unit, time, acknowledged, state (active\|cleared) }]` |
 | POST | `/api/alarms/{id}/ack` | `{ ok: true }` |
 | POST | `/api/assistant/query` | body `{ question }` (max 1000 chars; the panel writes the page context in front of the question) → `{ status: "awaiting_approval", run_id, plan }`, or already `{ status: "answered", result }` when the plan is out of scope |
 | POST | `/api/assistant/approve` | body `{ run_id, approved }` → `{ status: "answered", result: { answer, evidence: [{ tool, arguments, status, result }], grounded, limitations: [], filters: {}, source_measure } }` |

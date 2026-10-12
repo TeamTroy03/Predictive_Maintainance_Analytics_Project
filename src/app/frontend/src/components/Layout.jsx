@@ -24,7 +24,7 @@ function DataFreshness() {
       <div className="mt-0.5 text-sm font-medium text-gray-800">
         {asOf ? fmtDateTimeUtc(asOf) : failed ? 'Unknown' : 'Loading…'}
       </div>
-      {asOf && <div className="mt-0.5">Latest event in Gold · {timeAgo(asOf)}</div>}
+      {asOf && <div className="mt-0.5">Latest event · {timeAgo(asOf)}</div>}
     </div>
   )
 }
@@ -86,7 +86,7 @@ function TopBar() {
   return (
     <header className="flex h-14 shrink-0 items-center justify-between border-b border-line bg-white px-6">
       <div className="text-sm text-gray-600">
-        <span className="font-medium text-gray-900">Plant 4</span> · Predictive Maintenance Analytics
+        <span className="font-medium text-gray-900"></span> · Predictive Maintenance Analytics Interface
       </div>
       <div className="flex items-center gap-3">
         <button

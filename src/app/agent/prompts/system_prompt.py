@@ -56,8 +56,10 @@ JUDGE_PROMPT = ChatPromptTemplate.from_messages([
 # vars: question, plan (full plan text)
 SUMMARY_PROMPT = ChatPromptTemplate.from_messages([
     ("system", (
-        "Summarize this analysis plan for a business user in 2-3 sentences. Describe only what "
-        "will be looked up and why, in business terms. No tool names, parameters or technical terms.")),
+        "Summarize this analysis plan for a business user in 2-4 sentences, in the future tense "
+        "(\"We will ...\"). Describe only what will be looked up and why, in business terms. Keep the "
+        "equipment and time period when the plan has them, in plain words. No tool names, parameters, "
+        "JSON, IDs other than the equipment ID, lists, headings or separators.")),
     ("human", "Question: {question}\n\nPlan:\n{plan}"),
 ])
 

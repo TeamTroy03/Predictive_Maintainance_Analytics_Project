@@ -39,6 +39,6 @@ class State(TypedDict, total=False):
     revisions: int
     verdict: str  # approve | revise | reject | declined
     reasons: list[str]
-    plan_text: str  # full plan + business summary shown to the user
+    plan_text: str  # plain-language plan shown to the user (tool steps stay in `plan`)
     answer: AssistantAnswer
     trace: list[dict]  # one {tool, args, ok, result} per executed step, for the API's evidence

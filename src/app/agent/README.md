@@ -46,7 +46,7 @@ question ─► planner ─► evaluator ─┬─ approve ─► approval (inte
 | Node | What it does |
 |---|---|
 | `planner` | LLM (structured output `Plan`: approach + at most 4 `PlanStep(tool, args, purpose)`) using only the tools in `TOOLS`. On a revision it also receives the reviewer's feedback. |
-| `evaluator` | First `check_plan` (deterministic, no LLM), then `judge_plan` (LLM, `PlanReview`: `approve` / `revise` / `reject`). A deterministic violation goes straight back to the planner as `revise` without calling the judge LLM. On `approve` it also builds `plan_text` (full plan + a plain-language summary for the business user). |
+| `evaluator` | First `check_plan` (deterministic, no LLM), then `judge_plan` (LLM, `PlanReview`: `approve` / `revise` / `reject`). A deterministic violation goes straight back to the planner as `revise` without calling the judge LLM. On `approve` it also builds `plan_text` (only a plain-language summary for the business user; tool names and arguments stay in `State["plan"]` and the `plan_created` log). |
 | `approval` | Calls LangGraph `interrupt(plan_text)` and pauses until the user approves or declines. |
 | `executor` | If the plan was not approved nothing is executed and an empty answer with the reason in `limitations` is returned. Otherwise `execute()` runs the steps (see below). |
 
