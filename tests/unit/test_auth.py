@@ -11,9 +11,9 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from app.api.config import Settings
+from app.core.config import Settings
 from app.api.main import create_app
-from app.api.security import ISSUER, hash_password, verify_password
+from app.core.security import ISSUER, hash_password, verify_password
 
 EMAIL = "max@example.com"
 PASSWORD = "correct horse battery"

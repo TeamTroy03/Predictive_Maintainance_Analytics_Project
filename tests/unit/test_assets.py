@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from app.api import assets, shaping
-from app.api.config import Settings
+from app.core.config import Settings
 from app.api.errors import ApiError
 from app.api.main import create_app
 from app.api.routes import get_db

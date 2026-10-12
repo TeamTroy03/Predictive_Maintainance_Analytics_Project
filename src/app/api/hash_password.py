@@ -6,7 +6,7 @@
 import getpass
 import sys
 
-from app.api.security import hash_password
+from app.core.security import hash_password
 
 MIN_LENGTH = 12
 

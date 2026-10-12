@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from app.api import dashboard, services, shaping
-from app.api.config import Settings
+from app.core.config import Settings
 from app.api.main import create_app
 from app.api.routes import get_db
 from app.api.schemas import AnalyticsQuery, AnalyticsResult

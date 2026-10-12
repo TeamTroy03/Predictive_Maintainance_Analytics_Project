@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, Path, Query, Request, Response
 from fastapi.responses import JSONResponse
 
 from app.api.agent import approve_run, start_question
-from app.api.config import Settings, get_settings
 from app.api.assets import (
     asset_detail,
     list_alarms,
@@ -43,15 +42,10 @@ from app.api.schemas import (
     WorkOrderPage,
     WorkOrderStatus,
 )
-from app.api.security import (
-    COOKIE_NAME,
-    authenticate,
-    is_throttled,
-    issue_token,
-    record_failure,
-    require_auth,
-)
+from app.api.security import require_auth
 from app.api.services import equipment_health, overdue_work_orders, run_kpis
+from app.core.config import Settings, get_settings
+from app.core.security import COOKIE_NAME, authenticate, is_throttled, issue_token, record_failure
 
 
 def get_db(request: Request) -> GoldDB:

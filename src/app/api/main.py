@@ -4,11 +4,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api.config import Settings, get_settings
 from app.api.db import GoldDB
 from app.api.errors import add_error_handlers
-from app.api.observability import correlation_middleware, setup_logging
+from app.api.observability import correlation_middleware
 from app.api.routes import api, auth, public
+from app.core.config import Settings, get_settings
+from app.core.logging import setup_logging
 
 DESCRIPTION = """
 REST API of the Team 3 **Predictive Maintenance** solution, over the Databricks **Gold** layer.

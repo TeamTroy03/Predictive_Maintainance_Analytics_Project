@@ -8,7 +8,7 @@ from pydantic import SecretStr
 
 from app.agent.schemas import AssistantAnswer as AgentAnswer
 from app.api import agent as api_agent
-from app.api.config import Settings
+from app.core.config import Settings
 from app.api.errors import ApiError
 from app.api.main import create_app
 
