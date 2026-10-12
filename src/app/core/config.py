@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     auth_users: SecretStr = SecretStr("")
     session_minutes: int = 60
     cookie_secure: bool = True  # HTTPS only; False only for a browser that refuses Secure cookies on localhost
+    frontend_dist: str | None = None  # built React app; set by the Docker image so one container serves site + API
 
     # Databricks SQL warehouse that serves the Gold tables
     databricks_host: str = ""  # e.g. adb-1234567890123456.7.azuredatabricks.net

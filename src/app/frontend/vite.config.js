@@ -10,7 +10,8 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   return {
     plugins: [react(), tailwindcss()],
-    build: { chunkSizeWarningLimit: 1000 },
+    // 'static', not the default 'assets': FastAPI already serves GET /assets/{equipment_id}, which would shadow the bundles.
+    build: { chunkSizeWarningLimit: 1000, assetsDir: 'static' },
     server: {
       port: 5173,
       proxy: {
