@@ -52,6 +52,8 @@ const STATUS_STYLES = {
   open: 'bg-blue-50 text-blue-700 border-blue-200',
   overdue: 'bg-crit/10 text-crit border-crit/30',
   completed: 'bg-ok/10 text-ok border-ok/30',
+  active: 'bg-crit/10 text-crit border-crit/30',
+  cleared: 'bg-off/10 text-gray-600 border-off/30',
 }
 
 export function StatusBadge({ status }) {
@@ -109,12 +111,13 @@ export function Table({ columns, rows, empty = 'No data', onRowClick }) {
                 {c.label}
               </th>
             ))}
+            {onRowClick && <th className="w-6" />}
           </tr>
         </thead>
         <tbody>
           {rows.length === 0 && (
             <tr>
-              <td colSpan={columns.length} className="px-3 py-6 text-center text-gray-500">
+              <td colSpan={columns.length + (onRowClick ? 1 : 0)} className="px-3 py-6 text-center text-gray-500">
                 {empty}
               </td>
             </tr>
@@ -123,13 +126,15 @@ export function Table({ columns, rows, empty = 'No data', onRowClick }) {
             <tr
               key={row.id ?? i}
               onClick={onRowClick ? () => onRowClick(row) : undefined}
-              className={`border-b border-line last:border-0 ${onRowClick ? 'cursor-pointer hover:bg-brand-light/40' : ''}`}
+              className={`group border-b border-line last:border-0 ${onRowClick ? 'cursor-pointer hover:bg-brand-light/60' : ''}`}
             >
               {columns.map((c) => (
                 <td key={c.key} className={`px-3 py-2 align-middle ${c.wrap ? '' : 'whitespace-nowrap'} ${c.align === 'right' ? 'num text-right' : ''}`}>
                   {c.render ? c.render(row) : row[c.key]}
                 </td>
               ))}
+              {/* Chevron: tells the row opens something */}
+              {onRowClick && <td aria-hidden className="w-6 pr-3 text-right text-gray-400 group-hover:text-brand">›</td>}
             </tr>
           ))}
         </tbody>

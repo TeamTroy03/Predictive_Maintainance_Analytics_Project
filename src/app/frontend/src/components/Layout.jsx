@@ -3,6 +3,8 @@ import { AgentProvider, useAgent } from './AgentPanel.jsx'
 import AgentPanel from './AgentPanel.jsx'
 import { isMockMode } from '../api/client.js'
 import { useAuth } from '../auth.jsx'
+import { AsOfProvider, useAsOf } from '../asOf.jsx'
+import { fmtDateTimeUtc, timeAgo } from '../format.js'
 
 const NAV = [
   { to: '/', label: 'Fleet Health', icon: '▦' },
@@ -11,6 +13,21 @@ const NAV = [
   { to: '/sensors', label: 'Sensor Trends', icon: '∿' },
   { to: '/maintenance', label: 'Maintenance', icon: '⚒' },
 ]
+
+// What the sidebar footer tells: how fresh the data is, not that the API answers
+function DataFreshness() {
+  const { asOf, failed } = useAsOf()
+  return (
+    <div className="border-t border-line p-3 text-xs text-gray-500">
+      {isMockMode && <div className="mb-2"><span className="rounded bg-warn/10 px-2 py-1 font-medium text-warn">Demo data (mock mode)</span></div>}
+      <div className="font-semibold uppercase tracking-wide text-[11px]">Data through</div>
+      <div className="mt-0.5 text-sm font-medium text-gray-800">
+        {asOf ? fmtDateTimeUtc(asOf) : failed ? 'Unknown' : 'Loading…'}
+      </div>
+      {asOf && <div className="mt-0.5">Latest event in Gold · {timeAgo(asOf)}</div>}
+    </div>
+  )
+}
 
 function Sidebar() {
   return (
@@ -36,13 +53,7 @@ function Sidebar() {
           </NavLink>
         ))}
       </nav>
-      <div className="border-t border-line p-3 text-xs text-gray-500">
-        {isMockMode ? (
-          <span className="rounded bg-warn/10 px-2 py-1 font-medium text-warn">Demo data (mock mode)</span>
-        ) : (
-          <span className="rounded bg-ok/10 px-2 py-1 font-medium text-ok">Connected to FastAPI</span>
-        )}
-      </div>
+      <DataFreshness />
     </aside>
   )
 }
@@ -92,20 +103,22 @@ function TopBar() {
 
 export default function Layout() {
   return (
-    <AgentProvider>
-      <div className="flex h-screen overflow-hidden">
-        <Sidebar />
-        <div className="flex min-w-0 flex-1 flex-col">
-          <TopBar />
-          <div className="flex min-h-0 flex-1">
-            {/* Main page content. The AI panel sits next to it, so charts stay visible. */}
-            <main className="min-w-0 flex-1 overflow-y-auto p-6">
-              <Outlet />
-            </main>
-            <AgentPanel />
+    <AsOfProvider>
+      <AgentProvider>
+        <div className="flex h-screen overflow-hidden">
+          <Sidebar />
+          <div className="flex min-w-0 flex-1 flex-col">
+            <TopBar />
+            <div className="flex min-h-0 flex-1">
+              {/* Main page content. The AI panel sits next to it, so charts stay visible. */}
+              <main className="min-w-0 flex-1 overflow-y-auto p-6">
+                <Outlet />
+              </main>
+              <AgentPanel />
+            </div>
           </div>
         </div>
-      </div>
-    </AgentProvider>
+      </AgentProvider>
+    </AsOfProvider>
   )
 }

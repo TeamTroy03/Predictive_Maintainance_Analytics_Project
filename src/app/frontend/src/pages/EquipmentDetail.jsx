@@ -7,7 +7,7 @@ import SensorCharts from '../components/SensorCharts.jsx'
 import { WorkOrderTable } from './Maintenance.jsx'
 import { AlarmTable } from './Alarms.jsx'
 import { useAgent } from '../components/AgentPanel.jsx'
-import { fmtDate, fmtNumber } from '../format.js'
+import { fmtDate, fmtNumber, unitLabel } from '../format.js'
 
 // Counted back from the asset's last reading; real sensors report about once a day, so 30 days is the default
 const RANGES = [
@@ -88,7 +88,7 @@ export default function EquipmentDetail() {
               <li key={r.sensor} className="flex items-center justify-between py-2 text-sm">
                 <span>{r.sensor}</span>
                 <span className="flex items-center gap-3">
-                  <span className="num font-semibold">{r.value == null ? '–' : Number(r.value.toFixed(2))} {r.unit}</span>
+                  <span className="num font-semibold">{r.value == null ? '–' : Number(r.value.toFixed(2))} {unitLabel(r.unit)}</span>
                   <StatusBadge status={r.status} />
                 </span>
               </li>

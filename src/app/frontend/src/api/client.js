@@ -52,7 +52,10 @@ export const api = {
   // 1. Fleet health
   getFleetSummary: () => (USE_MOCK ? mock.getFleetSummary() : get('/api/fleet/summary')),
 
-  // 4. Equipment: { items, total, page, page_size }; filters: status, q, has_sensors, page, page_size
+  // Governed KPIs grouped, e.g. { kpis: ['availability'], group_by: ['equipment_type'] } -> { rows, ... } (no demo data)
+  queryKpis: (body) => (USE_MOCK ? Promise.resolve({ rows: [] }) : post('/api/analytics/query', body)),
+
+  // 4. Equipment: { items, total, page, page_size }; filters: status, q, line, sort, has_sensors, page, page_size
   getAssets: (filters = {}) => (USE_MOCK ? mock.getAssets(filters) : get(`/api/assets${query(filters)}`)),
   getAsset: (assetId) => (USE_MOCK ? mock.getAsset(assetId) : get(`/api/assets/${assetId}`)),
 
