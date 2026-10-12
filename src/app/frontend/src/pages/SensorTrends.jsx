@@ -5,17 +5,19 @@ import { PageHeader, Segmented, Loading, ErrorBox } from '../components/ui.jsx'
 import SensorCharts from '../components/SensorCharts.jsx'
 import { useAgent } from '../components/AgentPanel.jsx'
 
+// Counted back from the asset's last reading. Real sensors report about once a day, so short windows hold
+// only a point or two: the default is 30 days.
 const RANGES = [
-  { value: '1h', label: '1 h' },
   { value: '24h', label: '24 h' },
   { value: '7d', label: '7 days' },
+  { value: '30d', label: '30 days' },
+  { value: 'all', label: 'All' },
 ]
 
 export default function SensorTrends() {
   // Asset, range and hidden sensors are kept in the URL, so a view can be shared as a link
   const [params, setParams] = useSearchParams()
-  const assetId = params.get('asset') || 'PUMP-204B'
-  const range = params.get('range') || '24h'
+  const range = params.get('range') || '30d'
   const hidden = (params.get('hide') || '').split(',').filter(Boolean)
   const { ask } = useAgent()
 
@@ -25,23 +27,28 @@ export default function SensorTrends() {
     setParams(next)
   }
 
-  const assets = useApi(() => api.getAssets())
-  const series = useApi(() => api.getSensorSeries(assetId, range), [assetId, range])
+  // Only assets that have sensor readings can be picked (the server lists the most urgent first)
+  const assets = useApi(() => api.getAssets({ has_sensors: true, page_size: 100 }))
+  const choices = assets.data?.items ?? []
+  const assetId = params.get('asset') || choices[0]?.id
+  const series = useApi(() => (assetId ? api.getSensorSeries(assetId, range) : Promise.resolve(null)), [assetId, range])
 
   const toggleSensor = (id) => {
     const next = hidden.includes(id) ? hidden.filter((h) => h !== id) : [...hidden, id]
     update({ hide: next.join(',') })
   }
 
+  if (assets.error) return <ErrorBox error={assets.error} onRetry={assets.reload} />
+
   return (
     <div>
       <PageHeader title="Sensor Trends & Telemetry" subtitle="Hover over any chart to compare all sensors at the same moment">
         <select
-          value={assetId}
+          value={assetId ?? ''}
           onChange={(e) => update({ asset: e.target.value })}
           className="rounded-md border border-line bg-white px-3 py-1.5 text-sm"
         >
-          {(assets.data ?? [{ id: assetId, name: '' }]).map((a) => (
+          {choices.map((a) => (
             <option key={a.id} value={a.id}>
               {a.id} {a.name && `– ${a.name}`}
             </option>
@@ -57,7 +64,8 @@ export default function SensorTrends() {
       </PageHeader>
 
       {series.error && <ErrorBox error={series.error} onRetry={series.reload} />}
-      {!series.data && !series.error && <Loading />}
+      {!assets.loading && !assetId && <p className="py-10 text-center text-sm text-gray-500">No assets have sensor readings.</p>}
+      {(assets.loading || (assetId && !series.data)) && !series.error && <Loading />}
 
       {series.data && (
         <>

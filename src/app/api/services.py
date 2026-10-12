@@ -24,11 +24,12 @@ GROUP_COLUMNS = {
 }
 
 
-def _number(value: Any) -> Any:
-    return round(float(value), 4) if isinstance(value, Decimal | float) else value
+def _number(value: Any, digits: int = 4) -> Any:
+    return round(float(value), digits) if isinstance(value, Decimal | float) else value
 
 
-def run_kpis(db: GoldDB, q: AnalyticsQuery) -> AnalyticsResult:
+def run_kpis(db: GoldDB, q: AnalyticsQuery, digits: int = 4) -> AnalyticsResult:
+    """digits: rounding of the KPI values. The dashboard asks for more, because it converts units afterwards."""
     groups = [col for g in q.group_by for col in GROUP_COLUMNS[g]]
     select = [f"{expr} AS {name}" for expr, name in groups]
     select += [f"{KPI_DEFINITIONS[k][1]} AS {k.value}" for k in q.kpis]
@@ -67,7 +68,7 @@ def run_kpis(db: GoldDB, q: AnalyticsQuery) -> AnalyticsResult:
     raw = db.query(sql, params)
     # Without GROUP BY an aggregate always returns one row; no data shows as NULL timestamps.
     raw = [r for r in raw if r["loaded_ts"] is not None]
-    rows = [{k: _number(v) for k, v in r.items() if k not in ("as_of_ts", "loaded_ts")} for r in raw]
+    rows = [{k: _number(v, digits) for k, v in r.items() if k not in ("as_of_ts", "loaded_ts")} for r in raw]
     return AnalyticsResult(
         kpis={k.value: KPI_DEFINITIONS[k][0] for k in q.kpis},
         rows=rows,

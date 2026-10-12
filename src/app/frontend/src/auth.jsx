@@ -19,9 +19,10 @@ export function AuthProvider({ children }) {
     refresh()
   }, [])
 
-  const signIn = async () => {
-    await api.login() // real mode: browser leaves for FastAPI's login page and comes back signed in
-    refresh()
+  // Throws when the credentials are wrong: the login form shows the message.
+  const signIn = async (email, password) => {
+    await api.login(email, password)
+    await refresh()
   }
   const signOut = async () => {
     await api.logout()

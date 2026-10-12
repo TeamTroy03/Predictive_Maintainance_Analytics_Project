@@ -115,13 +115,18 @@ export async function getFleetSummary() {
   }
 }
 
-export async function getAssets() {
+// Same shape as FastAPI: { items, total, page, page_size }, filtered like the server does
+export async function getAssets({ status, q, page = 1, page_size = 50 } = {}) {
   await delay()
-  return ASSETS.map((a) => ({
+  const needle = (q ?? '').toLowerCase()
+  const all = ASSETS.filter(
+    (a) => (!status || a.status === status) && `${a.id} ${a.name} ${a.type} ${a.line}`.toLowerCase().includes(needle),
+  ).map((a) => ({
     ...a,
     active_alarms: ALARMS.filter((al) => al.asset_id === a.id && !al.acknowledged).length,
     last_maintenance: WORK_ORDERS.filter((w) => w.asset_id === a.id && w.completed).map((w) => w.completed).sort().at(-1) ?? null,
   }))
+  return { items: all.slice((page - 1) * page_size, page * page_size), total: all.length, page, page_size }
 }
 
 export async function getAsset(assetId) {
@@ -231,29 +236,47 @@ export async function acknowledgeAlarm(alarmId) {
   return { ok: true }
 }
 
-export async function askAgent(message, context = {}) {
+// Mirrors the real two-step flow: askAgent returns a plan to approve, approveAgent returns the answer.
+const mockRuns = new Map()
+
+export async function askAgent(question) {
   await delay(900)
-  const asset = context.asset_id ? ASSETS.find((a) => a.id === context.asset_id) : null
-  if (asset && asset.status === 'critical') {
-    return {
-      answer:
-        `${asset.id} (${asset.name}) is in critical condition.\n\n` +
-        `• Vibration RMS has risen to ~8.4 mm/s over the last hours (critical limit 7.1).\n` +
-        `• Bearing temperature is climbing at the same time, which points to a drive-end bearing problem (lubrication breakdown or race damage).\n\n` +
-        `Suggested action: schedule a bearing replacement in the next maintenance window and reduce load until then. Work order WO-994 is already open.`,
-      sources: [`sensors:${asset.id}:vibration`, `sensors:${asset.id}:bearing_temp`, 'work_orders:WO-994'],
-    }
-  }
-  if (asset) {
-    return {
-      answer: `${asset.id} is currently "${asset.status}" with a health score of ${asset.health_score ?? 'n/a'}. No strong anomaly pattern in the selected window. (Demo answer – connect FastAPI to get real agent output.)`,
-      sources: [],
-    }
-  }
+  const runId = `mock-${Date.now()}`
+  mockRuns.set(runId, question)
   return {
-    answer:
-      `Fleet summary: 2 assets are critical (PUMP-204B, EXT-004), 2 are in warning and 1 is offline. ` +
-      `The biggest risk right now is PUMP-204B (bearing). 6 work orders are overdue.\n\n(Demo answer – connect FastAPI to get real agent output.)`,
-    sources: [],
+    status: 'awaiting_approval',
+    run_id: runId,
+    plan: `Approach: answer the question from the Gold KPI tables.
+1. get_kpi: look up the relevant KPI for the requested period.
+2. query_kpi_table: fetch the supporting detail rows.
+
+(Demo plan: connect FastAPI to get the real agent.)`,
+    result: null,
   }
+}
+
+export async function approveAgent(runId, approved) {
+  await delay(900)
+  const question = mockRuns.get(runId) ?? ''
+  mockRuns.delete(runId)
+  const result = approved
+    ? {
+        answer: `Demo answer for: "${question}"
+
+Fleet availability is 96.4% and 6 work orders are overdue. (Demo data: connect FastAPI to get real agent output.)`,
+        evidence: [{ tool: 'get_kpi', arguments: { kpi_name: 'availability' }, status: 'ok', result: { row_count: 1 } }],
+        grounded: true,
+        limitations: ['Demo data only.'],
+        filters: {},
+        source_measure: 'availability (demo)',
+      }
+    : {
+        answer: 'The plan was declined, so nothing was run.',
+        evidence: [],
+        grounded: false,
+        limitations: ['The plan was declined by the user.'],
+        filters: {},
+        source_measure: '',
+      }
+  return { status: 'answered', run_id: runId, plan: null, result }
 }

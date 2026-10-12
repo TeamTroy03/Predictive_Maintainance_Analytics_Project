@@ -18,10 +18,12 @@ Client (Postman, app, agent UI) ──HTTPS + API key / JWT──► FastAPI
 | `src/app/api/kpis.py` | The 12 KPI formulas (same as Gold cell 3 and the DAX measures) |
 | `src/app/api/db.py` | Databricks SQL warehouse connection: timeout, retries, bound parameters |
 | `src/app/api/agent.py` | Adapter to the agent: `start_question`, `approve_run`, error and answer mapping |
-| `src/app/api/security.py` | API key (dev) and Entra ID JWT (deployed) |
+| `src/app/api/security.py` | `require_auth` dependency: cookie, API key (dev) or Entra ID JWT (deployed) |
 | `src/app/api/errors.py` | One JSON error format for every failure |
-| `src/app/api/observability.py` | Correlation IDs and JSON logs (secrets redacted) |
-| `src/app/api/config.py` | Settings from environment variables (Key Vault in Azure) |
+| `src/app/api/observability.py` | Correlation-ID request middleware |
+| `src/app/core/config.py` | Settings from environment variables (Key Vault in Azure) |
+| `src/app/core/security.py` | Password hashing, login throttle, session token, Entra ID JWT checks |
+| `src/app/core/logging.py` | JSON logs (secrets redacted) and the `correlation_id` context variable |
 
 ## Endpoints
 | Method | Path | Auth | Purpose |

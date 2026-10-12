@@ -1,6 +1,6 @@
 """Pydantic request and response models (validation + OpenAPI documentation)."""
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
@@ -93,6 +93,182 @@ class WorkOrderPage(BaseModel):
 
 
 Priority = Literal["P1", "P2", "P3", "P4"]
+
+
+# ---------------------------------------------------------------- auth
+class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=256, repr=False)  # bounded: scrypt cost grows with length
+
+
+class UserOut(BaseModel):
+    email: str
+    name: str
+    role: str = Field(description="Shown in the profile menu; every website user is a reader")
+
+
+# ---------------------------------------------------------------- dashboard (what the frontend pages read)
+# KPI values are the governed ones, converted for display: ratios as percent, alarm rate per hour.
+class FleetKpis(BaseModel):
+    availability_pct: float | None
+    unplanned_downtime_h: float | None
+    mtbf_h: float | None
+    mttr_h: float | None
+    repeat_failure_pct: float | None
+    overdue_work_orders: int | None
+    maintenance_cost_eur: float | None
+    alarm_rate_per_h: float | None = Field(description="alarm_rate (per asset-day) divided by 24")
+
+
+class StatusCounts(BaseModel):
+    operational: int = 0
+    warning: int = 0
+    critical: int = 0
+    offline: int = 0
+
+
+class TrendPoint(BaseModel):
+    date: str = Field(description="First day of the month: the KPI table is monthly")
+    availability_pct: float | None
+    unplanned_downtime_h: float | None
+
+
+class FleetSummary(BaseModel):
+    as_of: datetime | None = Field(description="Data as of (Gold AS_OF timestamp)")
+    period_from: str | None = Field(description="First month in Gold, yyyy-MM; KPIs cover the whole period")
+    period_to: str | None
+    kpis: FleetKpis
+    status_counts: StatusCounts = Field(description="Assets by availability over the period; offline = standby or decommissioned")
+    availability_trend: list[TrendPoint]
+
+
+class MaintenanceKpis(BaseModel):
+    mtbf_h: float | None
+    mttr_h: float | None
+    overdue_work_orders: int | None
+    maintenance_cost_eur: float | None
+    repeat_failure_pct: float | None
+    planned_pct: float | None = Field(description="Share of non-cancelled work orders that are planned (not Corrective)")
+
+
+class MonthlyPoint(BaseModel):
+    month: str = Field(description="yyyy-MM")
+    mtbf_h: float | None
+    mttr_h: float | None
+    cost_eur: float | None
+
+
+class CostByType(BaseModel):
+    type: str
+    cost_eur: float
+
+
+class MaintenanceSummary(BaseModel):
+    as_of: datetime | None
+    period_from: str | None
+    period_to: str | None
+    kpis: MaintenanceKpis
+    monthly: list[MonthlyPoint]
+    cost_by_type: list[CostByType]
+
+
+# ---------------------------------------------------------------- equipment, sensors, alarms, work orders
+# Fields Gold does not have (health score, remaining useful life, thresholds, technician) are simply absent.
+AssetStatus = Literal["operational", "warning", "critical", "offline"]
+SensorRange = Literal["1h", "24h", "7d", "30d", "all"]
+WorkOrderStatus = Literal["open", "overdue", "completed", "cancelled"]
+
+
+class AssetRow(BaseModel):
+    id: str
+    name: str | None
+    type: str | None
+    line: str | None
+    site: str | None
+    status: AssetStatus = Field(description="From availability over the period; decommissioned/standby = offline")
+    availability_pct: float | None
+    manufacturer: str | None
+    criticality: str | None
+    installed: date | None
+    active_alarms: int = Field(description="Alarm readings in the whole period: Gold has no acknowledged/cleared state")
+    last_maintenance: datetime | None = Field(description="Last closed work order")
+
+
+class AssetPage(BaseModel):
+    items: list[AssetRow]
+    total: int
+    page: int
+    page_size: int
+
+
+class AssetKpis(BaseModel):
+    availability_pct: float | None
+    mtbf_h: float | None
+    mttr_h: float | None
+    unplanned_downtime_h: float | None
+
+
+class LatestReading(BaseModel):
+    sensor: str
+    value: float | None
+    unit: str | None
+    status: AssetStatus
+
+
+class AssetDetail(AssetRow):
+    kpis: AssetKpis
+    latest_readings: list[LatestReading]
+    components: list[dict[str, Any]] = Field(default_factory=list, description="Not in Gold: always empty")
+
+
+class SensorPoint(BaseModel):
+    t: datetime
+    value: float | None
+    anomaly: bool = Field(description="Gold's is_alarm flag of the reading")
+
+
+class Sensor(BaseModel):
+    id: str
+    name: str
+    unit: str | None
+    warn: float | None = Field(None, description="Not in Gold")
+    crit: float | None = Field(None, description="Not in Gold")
+    lower_is_bad: bool = False
+    points: list[SensorPoint]
+
+
+class SensorSeries(BaseModel):
+    asset_id: str
+    range: SensorRange
+    sensors: list[Sensor]
+
+
+class Alarm(BaseModel):
+    id: str
+    asset_id: str | None
+    severity: Literal["critical", "warning"]
+    sensor: str | None
+    message: str
+    value: float | None
+    threshold: float | None = Field(None, description="Not in Gold")
+    unit: str | None
+    time: datetime
+    acknowledged: bool = Field(False, description="Gold keeps no acknowledgements: always false")
+
+
+class WorkOrderItem(BaseModel):
+    id: str
+    asset_id: str | None
+    type: str | None = Field(description="Maintenance type")
+    status: WorkOrderStatus
+    priority: str | None
+    title: str = Field(description="Built from maintenance type and failure mode: Gold has no title")
+    opened: datetime | None
+    due: datetime | None
+    completed: datetime | None
+    downtime_h: float | None
+    cost: float | None
 
 
 # ---------------------------------------------------------------- operations / assistant

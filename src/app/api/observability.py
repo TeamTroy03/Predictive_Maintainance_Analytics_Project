@@ -1,48 +1,21 @@
-"""Correlation IDs and structured (JSON) logs.
+"""Correlation-ID middleware (the JSON log format and `correlation_id` are in `app.core.logging`).
 
 Every request gets an ID (the caller's X-Correlation-ID if valid, otherwise a new UUID).
 It is returned in the response header and written in every log line of that request.
 """
 
-import json
 import logging
 import re
-import sys
 import time
 import uuid
-from contextvars import ContextVar
 
 from fastapi import Request
 
-correlation_id: ContextVar[str] = ContextVar("correlation_id", default="-")
+from app.core.logging import correlation_id
+
 logger = logging.getLogger("api")
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
-_SECRET_WORDS = ("key", "token", "secret", "password", "authorization")
-_STANDARD = set(vars(logging.makeLogRecord({}))) | {"message"}
-
-
-class JsonFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        line = {
-            "time": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
-            "level": record.levelname,
-            "message": record.getMessage(),
-            "correlation_id": correlation_id.get(),
-        }
-        for name, value in vars(record).items():  # fields passed with extra={...}
-            if name not in _STANDARD:
-                line[name] = "***" if any(w in name.lower() for w in _SECRET_WORDS) else value
-        if record.exc_info:
-            line["exception"] = self.formatException(record.exc_info)
-        return json.dumps(line, default=str)
-
-
-def setup_logging() -> None:
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(JsonFormatter())
-    logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
-    logging.getLogger("uvicorn.access").disabled = True  # replaced by our request log
 
 
 async def correlation_middleware(request: Request, call_next):  # noqa: ANN001, ANN201

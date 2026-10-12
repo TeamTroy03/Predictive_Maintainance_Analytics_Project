@@ -63,9 +63,12 @@ All times are ISO 8601 strings. Status values: `operational | warning | critical
 | GET | `/api/maintenance/work-orders?status=&asset_id=` | `[{ id, asset_id, asset_name, type, status (open\|overdue\|completed), priority, title, technician, opened, due, completed, downtime_h, cost }]` |
 | GET | `/api/alarms?asset_id=` | `[{ id, asset_id, asset_name, severity (critical\|warning\|info), sensor, message, value, threshold, unit, time, acknowledged }]` |
 | POST | `/api/alarms/{id}/ack` | `{ ok: true }` |
-| POST | `/api/agent/chat` | body `{ message, context: { page, asset_id, range, alarm_id }, history: [{ role, content }] }` → `{ answer, sources: [] }` |
+| POST | `/api/assistant/query` | body `{ question }` (max 1000 chars; the panel writes the page context in front of the question) → `{ status: "awaiting_approval", run_id, plan }`, or already `{ status: "answered", result }` when the plan is out of scope |
+| POST | `/api/assistant/approve` | body `{ run_id, approved }` → `{ status: "answered", result: { answer, evidence: [{ tool, arguments, status, result }], grounded, limitations: [], filters: {}, source_measure } }` |
 
-FastAPI forwards `/api/agent/chat` to the agent backend and returns its answer.
+The agent proposes a plan first and only runs it after the user approves (Approve / Decline buttons in the panel).
+Each call can take up to a few minutes, so the client timeout is 300 s. Errors use
+`{ error: { code, message, correlation_id } }`; `unknown_run` (404) means the plan expired, ask again.
 
 ## Next steps (when needed)
 

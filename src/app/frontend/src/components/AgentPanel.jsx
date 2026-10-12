@@ -6,8 +6,9 @@ import { api } from '../api/client.js'
 // AI assistant: a panel docked on the right side of the screen.
 // Any page can open it with a pre-filled question:   const { ask } = useAgent()
 //                                                    ask('Why is PUMP-204B critical?')
-// Every question is sent together with the current page context
-// (page name + selected asset) so the agent knows what the user is looking at.
+// Every question is sent with the current page context (page name + selected asset) written in front of it,
+// so the agent knows what the user is looking at.
+// The agent works in two steps: it first proposes a plan, and only runs it once the user approves.
 // ---------------------------------------------------------------------------
 
 const AgentContext = createContext(null)
@@ -25,30 +26,75 @@ function useCurrentContext() {
   }
 }
 
+// The backend accepts a question of at most 1000 characters
+const MAX_QUESTION = 1000
+
+function withContext(question, context) {
+  const parts = Object.entries(context)
+    .filter(([, v]) => v)
+    .map(([k, v]) => `${k}: ${v}`)
+  const prefix = parts.length ? `[Context - ${parts.join(', ')}] ` : ''
+  return (prefix + question).slice(0, MAX_QUESTION)
+}
+
+// The API error envelope is { error: { code, message } }; request() puts it in err.cause
+const errorText = (err) => err.cause?.message ?? err.message
+
 export function AgentProvider({ children }) {
   const [open, setOpen] = useState(false)
-  const [messages, setMessages] = useState([]) // { role: 'user' | 'assistant', content, sources? }
+  // { role: 'user', content }
+  // { role: 'assistant', kind: 'plan', plan, runId, state: 'pending' | 'approved' | 'declined' | 'expired' }
+  // { role: 'assistant', kind: 'answer', content, result }   (result = AssistantAnswer from the API)
+  // { role: 'assistant', kind: 'error', content, error: true }
+  const [messages, setMessages] = useState([])
   const [busy, setBusy] = useState(false)
   const context = useCurrentContext()
+  const awaitingApproval = messages.some((m) => m.kind === 'plan' && m.state === 'pending')
+
+  const add = (message) => setMessages((m) => [...m, message])
+  const addError = (err) =>
+    add({ role: 'assistant', kind: 'error', content: `Sorry, the agent could not answer: ${errorText(err)}`, error: true })
+  const answerMessage = (result) => ({ role: 'assistant', kind: 'answer', content: result.answer, result })
 
   async function ask(question, extraContext = {}) {
-    if (!question.trim() || busy) return
+    if (!question.trim() || busy || awaitingApproval) return
     setOpen(true)
-    const history = messages.map(({ role, content }) => ({ role, content }))
-    setMessages((m) => [...m, { role: 'user', content: question }])
+    add({ role: 'user', content: question })
     setBusy(true)
     try {
-      const result = await api.askAgent(question, { ...context, ...extraContext }, history)
-      setMessages((m) => [...m, { role: 'assistant', content: result.answer, sources: result.sources }])
+      const res = await api.askAgent(withContext(question, { ...context, ...extraContext }))
+      if (res.status === 'awaiting_approval') add({ role: 'assistant', kind: 'plan', plan: res.plan, runId: res.run_id, state: 'pending' })
+      else add(answerMessage(res.result))
     } catch (err) {
-      setMessages((m) => [...m, { role: 'assistant', content: `Sorry, the agent is not reachable: ${err.message}`, error: true }])
+      addError(err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // The user's decision on a plan: approved -> the agent runs it and answers, declined -> nothing runs
+  async function decide(runId, approved) {
+    if (busy) return
+    const setState = (state) => setMessages((m) => m.map((x) => (x.runId === runId ? { ...x, state } : x)))
+    setState(approved ? 'approved' : 'declined')
+    setBusy(true)
+    try {
+      const res = await api.approveAgent(runId, approved)
+      add(answerMessage(res.result))
+    } catch (err) {
+      if (err.cause?.code === 'unknown_run') {
+        setState('expired')
+        add({ role: 'assistant', kind: 'error', content: 'This plan has expired (the server may have restarted). Please ask the question again.', error: true })
+      } else {
+        addError(err)
+      }
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <AgentContext.Provider value={{ open, setOpen, messages, setMessages, busy, ask, context }}>
+    <AgentContext.Provider value={{ open, setOpen, messages, setMessages, busy, awaitingApproval, ask, decide, context }}>
       {children}
     </AgentContext.Provider>
   )
@@ -63,7 +109,7 @@ const SUGGESTIONS = {
 }
 
 export default function AgentPanel() {
-  const { open, setOpen, messages, setMessages, busy, ask, context } = useAgent()
+  const { open, setOpen, messages, setMessages, busy, awaitingApproval, ask, decide, context } = useAgent()
   const [input, setInput] = useState('')
   const bottomRef = useRef(null)
 
@@ -114,19 +160,22 @@ export default function AgentPanel() {
         )}
         {messages.map((m, i) => (
           <div key={i} className={m.role === 'user' ? 'flex justify-end' : ''}>
-            <div
-              className={`max-w-[90%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${
-                m.role === 'user' ? 'bg-brand text-white' : m.error ? 'bg-crit/10 text-crit' : 'bg-canvas text-gray-800'
-              }`}
-            >
-              {m.content}
-              {m.sources?.length > 0 && (
-                <div className="mt-2 border-t border-line pt-1.5 text-[11px] text-gray-500">Sources: {m.sources.join(', ')}</div>
-              )}
-            </div>
+            {m.kind === 'plan' ? (
+              <PlanBubble message={m} busy={busy} onDecide={decide} />
+            ) : (
+              <div
+                className={`max-w-[90%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${
+                  m.role === 'user' ? 'bg-brand text-white' : m.error ? 'bg-crit/10 text-crit' : 'bg-canvas text-gray-800'
+                }`}
+              >
+                {m.content}
+                {m.result && <AnswerDetails result={m.result} />}
+              </div>
+            )}
           </div>
         ))}
-        {busy && <div className="text-sm text-gray-500">Agent is thinking…</div>}
+        {busy && <div className="text-sm text-gray-500">Agent is working… this can take up to a minute.</div>}
+        {awaitingApproval && !busy && <div className="text-xs text-gray-500">Approve or decline the plan to continue.</div>}
         <div ref={bottomRef} />
       </div>
 
@@ -137,10 +186,54 @@ export default function AgentPanel() {
           placeholder="Ask the agent…"
           className="min-w-0 flex-1 rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-brand"
         />
-        <button disabled={busy || !input.trim()} className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
+        <button disabled={busy || awaitingApproval || !input.trim()} className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
           Send
         </button>
       </form>
     </aside>
+  )
+}
+
+// The agent's plan, shown before anything runs. Only the user's approval lets the agent query the data.
+function PlanBubble({ message, busy, onDecide }) {
+  const { plan, runId, state } = message
+  return (
+    <div className="max-w-[90%] rounded-lg border border-brand/40 bg-brand-light/30 px-3 py-2 text-sm text-gray-800">
+      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-brand">Proposed plan</div>
+      <div className="whitespace-pre-wrap">{plan}</div>
+      {state === 'pending' ? (
+        <div className="mt-2 flex gap-2">
+          <button disabled={busy} onClick={() => onDecide(runId, true)} className="rounded-md bg-brand px-3 py-1 text-xs font-medium text-white disabled:opacity-40">
+            Approve
+          </button>
+          <button disabled={busy} onClick={() => onDecide(runId, false)} className="rounded-md border border-line px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-40">
+            Decline
+          </button>
+        </div>
+      ) : (
+        <div className="mt-2 text-xs capitalize text-gray-500">{state}</div>
+      )}
+    </div>
+  )
+}
+
+// What the answer is based on: measure, filters, tools used, limitations
+function AnswerDetails({ result }) {
+  const filters = Object.entries(result.filters ?? {}).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
+  const tools = [...new Set((result.evidence ?? []).map((e) => `${e.tool}${e.status === 'error' ? ' (failed)' : ''}`))]
+  return (
+    <div className="mt-2 space-y-1 border-t border-line pt-1.5 text-[11px] text-gray-500">
+      {!result.grounded && <div className="font-medium text-warn">Not grounded in data: treat this answer with caution.</div>}
+      {result.source_measure && <div>Source / measure: {result.source_measure}</div>}
+      {filters.length > 0 && <div>Filters: {filters.join('; ')}</div>}
+      {tools.length > 0 && <div>Tools used: {tools.join(', ')}</div>}
+      {result.limitations?.length > 0 && (
+        <ul className="list-disc pl-4">
+          {result.limitations.map((l, i) => (
+            <li key={i}>{l}</li>
+          ))}
+        </ul>
+      )}
+    </div>
   )
 }

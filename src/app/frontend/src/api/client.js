@@ -13,20 +13,46 @@ const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 // For a deployed build you can set VITE_API_BASE_URL=https://your-fastapi-host
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
 
-async function request(path, options = {}) {
-  const response = await fetch(`${BASE_URL}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  })
-  if (!response.ok) {
-    const text = await response.text()
-    throw new Error(`${response.status} ${response.statusText}: ${text || path}`)
+// The session is an HttpOnly cookie set by FastAPI: the browser sends it by itself, JavaScript never sees it.
+async function request(path, { timeoutMs, ...options } = {}) {
+  const controller = new AbortController()
+  const timer = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null
+  try {
+    const response = await fetch(`${BASE_URL}${path}`, {
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      signal: controller.signal,
+      ...options,
+    })
+    if (!response.ok) {
+      // Session expired while using the app: reload, the app then shows the login page.
+      if (response.status === 401 && !path.startsWith('/api/auth/')) window.location.reload()
+      const text = await response.text()
+      throw new Error(`${response.status} ${response.statusText}: ${text || path}`, { cause: parseApiError(text) })
+    }
+    return await response.json()
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)} s`)
+    throw err
+  } finally {
+    if (timer) clearTimeout(timer)
   }
-  return response.json()
+}
+
+// FastAPI errors look like { error: { code, message, correlation_id, details } }
+function parseApiError(text) {
+  try {
+    return JSON.parse(text).error ?? undefined
+  } catch {
+    return undefined
+  }
 }
 
 const get = (path) => request(path)
-const post = (path, body) => request(path, { method: 'POST', body: JSON.stringify(body ?? {}) })
+const post = (path, body, timeoutMs) => request(path, { method: 'POST', body: JSON.stringify(body ?? {}), timeoutMs })
+
+// Each assistant call makes several sequential LLM calls (tens of seconds, minutes in the worst case).
+const ASSISTANT_TIMEOUT_MS = 300_000
 
 function query(params) {
   const clean = Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== ''))
@@ -34,20 +60,28 @@ function query(params) {
   return qs ? `?${qs}` : ''
 }
 
+// FastAPI does not serve these yet. With real data they fail with a clear message instead of showing mock
+// data next to real KPIs. Once the endpoint exists, replace the pending(...) call with the real get/post.
+const pending = (name, mockFn) =>
+  USE_MOCK ? mockFn : () => Promise.reject(new Error(`${name}: not available yet, the backend endpoint is pending`))
+
 export const api = {
-  // Auth is done by FastAPI (OAuth + session cookie); React only asks who is signed in.
-  getMe: () => (USE_MOCK ? mock.getMe() : get('/api/auth/me')), // 401 = not signed in
-  login: () => (USE_MOCK ? mock.login() : (window.location.href = `${BASE_URL}/api/auth/login`)),
+  // Users are added by hand on the server. Login sets the session cookie; /auth/me says who is signed in (401 = nobody).
+  getMe: () => (USE_MOCK ? mock.getMe() : get('/api/auth/me')),
+  login: (email, password) => (USE_MOCK ? mock.login() : post('/api/auth/login', { email, password })),
   logout: () => (USE_MOCK ? mock.logout() : post('/api/auth/logout')),
 
   // 1. Fleet health
   getFleetSummary: () => (USE_MOCK ? mock.getFleetSummary() : get('/api/fleet/summary')),
 
-  // 4. Equipment
-  getAssets: () => (USE_MOCK ? mock.getAssets() : get('/api/assets')),
+  // Governed KPIs grouped, e.g. { kpis: ['availability'], group_by: ['equipment_type'] } -> { rows, ... } (no demo data)
+  queryKpis: (body) => (USE_MOCK ? Promise.resolve({ rows: [] }) : post('/api/analytics/query', body)),
+
+  // 4. Equipment: { items, total, page, page_size }; filters: status, q, line, sort, has_sensors, page, page_size
+  getAssets: (filters = {}) => (USE_MOCK ? mock.getAssets(filters) : get(`/api/assets${query(filters)}`)),
   getAsset: (assetId) => (USE_MOCK ? mock.getAsset(assetId) : get(`/api/assets/${assetId}`)),
 
-  // 2. Sensor trends  (range = "1h" | "24h" | "7d")
+  // 2. Sensor trends  (range = "24h" | "7d" | "30d" | "all", counted back from the asset's last reading)
   getSensorSeries: (assetId, range) =>
     USE_MOCK ? mock.getSensorSeries(assetId, range) : get(`/api/assets/${assetId}/sensors${query({ range })}`),
 
@@ -56,13 +90,18 @@ export const api = {
   getWorkOrders: (filters = {}) =>
     USE_MOCK ? mock.getWorkOrders(filters) : get(`/api/maintenance/work-orders${query(filters)}`),
 
-  // 5. Critical exceptions / alarms
+  // 5. Critical exceptions / alarms (Gold keeps no acknowledgements, so there is nothing to acknowledge)
   getAlarms: (filters = {}) => (USE_MOCK ? mock.getAlarms(filters) : get(`/api/alarms${query(filters)}`)),
-  acknowledgeAlarm: (alarmId) => (USE_MOCK ? mock.acknowledgeAlarm(alarmId) : post(`/api/alarms/${alarmId}/ack`)),
+  acknowledgeAlarm: pending('Alarm acknowledgement', mock.acknowledgeAlarm),
 
-  // AI agent (FastAPI forwards this to the agent backend)
-  askAgent: (message, context, history) =>
-    USE_MOCK ? mock.askAgent(message, context) : post('/api/agent/chat', { message, context, history }),
+  // AI agent, two steps: askAgent -> { status: 'awaiting_approval', run_id, plan } (or already 'answered'),
+  // then approveAgent -> { status: 'answered', result: { answer, evidence, grounded, limitations, filters, source_measure } }
+  askAgent: (question) =>
+    USE_MOCK ? mock.askAgent(question) : post('/api/assistant/query', { question }, ASSISTANT_TIMEOUT_MS),
+  approveAgent: (runId, approved) =>
+    USE_MOCK
+      ? mock.approveAgent(runId, approved)
+      : post('/api/assistant/approve', { run_id: runId, approved }, ASSISTANT_TIMEOUT_MS),
 }
 
 export const isMockMode = USE_MOCK

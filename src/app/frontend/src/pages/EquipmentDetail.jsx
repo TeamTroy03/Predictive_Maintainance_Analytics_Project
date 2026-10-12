@@ -7,17 +7,19 @@ import SensorCharts from '../components/SensorCharts.jsx'
 import { WorkOrderTable } from './Maintenance.jsx'
 import { AlarmTable } from './Alarms.jsx'
 import { useAgent } from '../components/AgentPanel.jsx'
-import { fmtDate, fmtNumber } from '../format.js'
+import { fmtDate, fmtNumber, unitLabel } from '../format.js'
 
+// Counted back from the asset's last reading; real sensors report about once a day, so 30 days is the default
 const RANGES = [
-  { value: '1h', label: '1 h' },
   { value: '24h', label: '24 h' },
   { value: '7d', label: '7 days' },
+  { value: '30d', label: '30 days' },
+  { value: 'all', label: 'All' },
 ]
 
 export default function EquipmentDetail() {
   const { assetId } = useParams()
-  const [range, setRange] = useState('24h')
+  const [range, setRange] = useState('30d')
   const { ask } = useAgent()
 
   const asset = useApi(() => api.getAsset(assetId), [assetId])
@@ -42,7 +44,9 @@ export default function EquipmentDetail() {
           </div>
           <p className="mt-1 text-sm text-gray-600">{a.name}</p>
           <p className="mt-1 text-xs text-gray-500">
-            {a.manufacturer} · {a.line} · installed {fmtDate(a.installed)} · {fmtNumber(a.run_hours, 0)} run hours
+            {[a.manufacturer, a.line, a.site, a.installed && `installed ${fmtDate(a.installed)}`, a.run_hours != null && `${fmtNumber(a.run_hours, 0)} run hours`]
+              .filter(Boolean)
+              .join(' · ')}
           </p>
         </div>
         <div className="flex gap-2">
@@ -59,44 +63,50 @@ export default function EquipmentDetail() {
       </div>
 
       {/* KPIs for this asset */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <KpiCard label="Availability" value={fmtNumber(a.kpis.availability_pct)} unit="%" tone={a.kpis.availability_pct >= 95 ? 'good' : 'bad'} />
-        <KpiCard label="MTBF" value={fmtNumber(a.kpis.mtbf_h, 0)} unit="h" />
-        <KpiCard label="MTTR" value={fmtNumber(a.kpis.mttr_h)} unit="h" />
-        <KpiCard label="Unplanned downtime" value={fmtNumber(a.kpis.unplanned_downtime_h)} unit="h" hint="Last 30 days" />
-        <KpiCard
-          label="Remaining useful life"
-          value={a.rul_days ?? '–'}
-          unit={a.rul_days ? 'days' : ''}
-          hint={a.predicted_failure ? `Predicted: ${a.predicted_failure}` : 'No failure predicted'}
-          tone={a.rul_days == null ? 'good' : a.rul_days < 7 ? 'bad' : 'warn'}
-        />
+      {/* Remaining useful life is a prediction the Gold layer does not have: the card only exists when the API sends it */}
+      <div className={`grid grid-cols-2 gap-3 ${'rul_days' in a ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
+        <KpiCard label="Availability" value={fmtNumber(a.kpis.availability_pct, 2)} unit="%" hint="Whole period" tone={a.kpis.availability_pct == null ? 'neutral' : a.kpis.availability_pct >= 95 ? 'good' : 'bad'} />
+        <KpiCard label="MTBF" value={fmtNumber(a.kpis.mtbf_h, 0)} unit="h" hint="Whole period" />
+        <KpiCard label="MTTR" value={fmtNumber(a.kpis.mttr_h)} unit="h" hint="Whole period" />
+        <KpiCard label="Unplanned downtime" value={fmtNumber(a.kpis.unplanned_downtime_h)} unit="h" hint="Whole period" />
+        {'rul_days' in a && (
+          <KpiCard
+            label="Remaining useful life"
+            value={a.rul_days ?? '–'}
+            unit={a.rul_days ? 'days' : ''}
+            hint={a.predicted_failure ? `Predicted: ${a.predicted_failure}` : 'No failure predicted'}
+            tone={a.rul_days == null ? 'good' : a.rul_days < 7 ? 'bad' : 'warn'}
+          />
+        )}
       </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <Card title="Latest sensor readings">
+          {a.latest_readings.length === 0 && <p className="text-sm text-gray-500">This asset has no sensor readings.</p>}
           <ul className="divide-y divide-line">
             {a.latest_readings.map((r) => (
               <li key={r.sensor} className="flex items-center justify-between py-2 text-sm">
                 <span>{r.sensor}</span>
                 <span className="flex items-center gap-3">
-                  <span className="num font-semibold">{r.value ?? '–'} {r.unit}</span>
+                  <span className="num font-semibold">{r.value == null ? '–' : Number(r.value.toFixed(2))} {unitLabel(r.unit)}</span>
                   <StatusBadge status={r.status} />
                 </span>
               </li>
             ))}
           </ul>
         </Card>
-        <Card title="Components">
-          <ul className="divide-y divide-line">
-            {a.components.map((c) => (
-              <li key={c.name} className="flex items-center justify-between py-2 text-sm">
-                <span>{c.name}</span>
-                <StatusBadge status={c.status} />
-              </li>
-            ))}
-          </ul>
-        </Card>
+        {a.components.length > 0 && (
+          <Card title="Components">
+            <ul className="divide-y divide-line">
+              {a.components.map((c) => (
+                <li key={c.name} className="flex items-center justify-between py-2 text-sm">
+                  <span>{c.name}</span>
+                  <StatusBadge status={c.status} />
+                </li>
+              ))}
+            </ul>
+          </Card>
+        )}
       </div>
 
       <Card title="Sensor trends" className="mt-4" action={<Segmented options={RANGES} value={range} onChange={setRange} />}>
@@ -106,11 +116,15 @@ export default function EquipmentDetail() {
       </Card>
 
       <Card title="Alarms on this asset" className="mt-4">
-        {alarms.data ? <AlarmTable rows={alarms.data} showAsset={false} onChanged={alarms.reload} /> : <Loading />}
+        {alarms.error && <ErrorBox error={alarms.error} onRetry={alarms.reload} />}
+        {!alarms.data && !alarms.error && <Loading />}
+        {alarms.data && <AlarmTable rows={alarms.data} showAsset={false} onChanged={alarms.reload} />}
       </Card>
 
       <Card title="Maintenance history" className="mt-4">
-        {workOrders.data ? <WorkOrderTable rows={workOrders.data} showAsset={false} /> : <Loading />}
+        {workOrders.error && <ErrorBox error={workOrders.error} onRetry={workOrders.reload} />}
+        {!workOrders.data && !workOrders.error && <Loading />}
+        {workOrders.data && <WorkOrderTable rows={workOrders.data} showAsset={false} />}
       </Card>
     </div>
   )
