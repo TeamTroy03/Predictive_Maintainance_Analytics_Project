@@ -3,12 +3,14 @@
 .idea
 .claude
 .venv
-.env
-.env.*
+**/.env
+**/.env.*
 **/__pycache__
 .pytest_cache
 .ruff_cache
 *.egg-info
+**/node_modules
+**/dist
 context
 databricks
 docs

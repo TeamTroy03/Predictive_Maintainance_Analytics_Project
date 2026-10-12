@@ -2,7 +2,9 @@
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException
 
 from app.api.db import GoldDB
 from app.api.errors import add_error_handlers
@@ -42,7 +44,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(public)
     app.include_router(auth)
     app.include_router(api)
+    if settings.frontend_dist:
+        _serve_frontend(app, settings.frontend_dist)
     return app
+
+
+class SPAFiles(StaticFiles):
+    """Static files that fall back to index.html, so React Router deep links survive a page refresh."""
+
+    async def get_response(self, path: str, scope):  # noqa: ANN001, ANN201
+        try:
+            return await super().get_response(path, scope)
+        except HTTPException as exc:
+            if exc.status_code != 404 or scope.get("is_api"):  # an unknown /api/... stays a JSON 404
+                raise
+            return await super().get_response("index.html", scope)
+
+
+def _serve_frontend(app: FastAPI, dist: str) -> None:
+    """Same origin for site and API (the session cookie is SameSite=Strict). The browser calls /api/...;
+    the prefix is removed here, exactly as the Vite dev proxy does."""
+
+    @app.middleware("http")
+    async def strip_api_prefix(request: Request, call_next):  # noqa: ANN202
+        if request.scope["path"].startswith("/api/"):
+            request.scope["path"] = request.scope["path"][4:]
+            request.scope["is_api"] = True
+        return await call_next(request)
+
+    app.mount("/", SPAFiles(directory=dist, html=True), name="frontend")  # last: routers match first
 
 
 app = create_app()

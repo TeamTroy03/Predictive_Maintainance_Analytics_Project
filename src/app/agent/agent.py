@@ -40,7 +40,7 @@ load_dotenv()
 
 # ---------- Logging ----------
 
-LOG_DIR = Path(__file__).parent / ".log"  # gitignored (*.log*)
+LOG_DIR = Path(os.environ.get("AGENT_LOG_DIR") or Path(__file__).parent / ".log")  # gitignored (*.log*); the image points it at a writable dir
 
 
 class _JsonFormatter(logging.Formatter):
