@@ -1,0 +1,172 @@
+name: CD
+
+# Runs after CI is green on main, or by hand. Manual run with image_tag = rollback to an earlier build.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Deploy this existing assets-api tag (rollback) instead of building"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+env:
+  RESOURCE_GROUP: rg_gtgh_data_15
+  AZURE_LOCATION: westeurope
+  ACR_NAME: dim02accwse12345
+  CONTAINER_APP: assets-app
+  # existing Container Apps environment that already runs Redis: same network, so REDIS_URL resolves
+  CONTAINER_ENV: redis-assets2
+
+jobs:
+  validate:
+    # the CI run must have passed and come from a push to main
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ inputs.image_tag || github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - run: |
+          az bicep build --file infra/bicep-scripts/infrastructure.bicep --stdout > /dev/null
+          az bicep build --file infra/bicep-scripts/app.bicep --stdout > /dev/null
+
+  build-push:
+    needs: validate
+    if: inputs.image_tag == ''
+    runs-on: ubuntu-latest
+    environment: Azure
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIAL }}
+      # the registry must exist before the first push (idempotent)
+      - run: >
+          az deployment group create -g "$RESOURCE_GROUP"
+          -f infra/bicep-scripts/infrastructure.bicep
+          -p acrName="$ACR_NAME" location="$AZURE_LOCATION"
+      - run: az acr login --name "$ACR_NAME"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.ACR_NAME }}.azurecr.io/assets-api:${{ needs.validate.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: [validate, build-push]
+    # build-push is skipped on a rollback run, that is fine
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    environment: Azure
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIAL }}
+
+      # secret ENV = the whole .env text; parsed like deploy.ps1 does (KEY=value, optional quotes)
+      - id: deploy
+        env:
+          ENV_TEXT: ${{ secrets.ENV }}
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          declare -A S
+          while IFS= read -r line || [ -n "$line" ]; do
+            line="${line%$'\r'}"
+            [[ "$line" =~ ^[[:space:]]*([A-Z_]+)[[:space:]]*=(.*)$ ]] || continue
+            k="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"
+            v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+            v="${v#\"}"; v="${v%\"}"
+            S[$k]="$v"
+          done <<< "$ENV_TEXT"
+
+          for k in JWT_SECRET AUTH_USERS DATABRICKS_TOKEN AZURE_OPENAI_API_KEY REDIS_URL; do
+            [ -n "${S[$k]:-}" ] && echo "::add-mask::${S[$k]}"
+          done
+
+          # bicep parameter = .env key; the last three are optional (Bicep has defaults)
+          params='{}'; missing=()
+          for pair in jwtSecret=JWT_SECRET authUsers=AUTH_USERS databricksToken=DATABRICKS_TOKEN \
+                      azureOpenaiApiKey=AZURE_OPENAI_API_KEY redisUrl=REDIS_URL \
+                      databricksHost=DATABRICKS_HOST databricksHttpPath=DATABRICKS_HTTP_PATH \
+                      azureOpenaiEndpoint=AZURE_OPENAI_ENDPOINT azureOpenaiDeploymentName=AZURE_OPENAI_DEPLOYMENT_NAME \
+                      openaiApiVersion=OPENAI_API_VERSION goldCatalog=GOLD_CATALOG goldSchema=GOLD_SCHEMA \
+                      goldTablePrefix=GOLD_TABLE_PREFIX; do
+            name="${pair%%=*}"; key="${pair#*=}"
+            if [ -n "${S[$key]:-}" ]; then
+              params=$(jq --arg n "$name" --arg v "${S[$key]}" '. + {($n): {value: $v}}' <<< "$params")
+            else
+              case "$key" in GOLD_*) ;; *) missing+=("$key");; esac
+            fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then echo "::error::ENV secret is missing: ${missing[*]}"; exit 1; fi
+
+          params=$(jq \
+            --arg loc "$AZURE_LOCATION" --arg acr "$ACR_NAME" --arg env "$CONTAINER_ENV" \
+            --arg app "$CONTAINER_APP" --arg img "assets-api:$TAG" \
+            '. + {location: {value: $loc}, acrName: {value: $acr}, environmentName: {value: $env},
+                  containerAppName: {value: $app}, imageName: {value: $img}}
+             | {"$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+                contentVersion: "1.0.0.0", parameters: .}' <<< "$params")
+          printf '%s' "$params" > "$RUNNER_TEMP/params.json"
+
+          # what-if stays in the log as evidence of what changes
+          az deployment group what-if -g "$RESOURCE_GROUP" -f infra/bicep-scripts/app.bicep -p "@$RUNNER_TEMP/params.json"
+          url=$(az deployment group create -g "$RESOURCE_GROUP" -f infra/bicep-scripts/app.bicep \
+                  -p "@$RUNNER_TEMP/params.json" --query properties.outputs.url.value -o tsv)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Deployed assets-api:$TAG to $url" >> "$GITHUB_STEP_SUMMARY"
+
+      - if: always()
+        run: rm -f "$RUNNER_TEMP/params.json"
+
+  smoke:
+    needs: deploy
+    runs-on: ubuntu-latest
+    environment: Azure
+    steps:
+      - uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIAL }}
+      - name: health and readiness
+        run: |
+          for path in health ready; do
+            ok=0
+            for i in $(seq 1 12); do
+              if curl -fsS "${{ needs.deploy.outputs.url }}/$path"; then ok=1; echo; break; fi
+              sleep 10
+            done
+            [ "$ok" = 1 ] || { echo "::error::/$path did not answer 200"; exit 1; }
+          done
+      # /ready does not check Redis; the app pings it once at startup and logs this if it fails
+      - name: Redis reachable from the app
+        run: |
+          az config set extension.use_dynamic_install=yes_without_prompt
+          sleep 20
+          logs=$(az containerapp logs show -n "$CONTAINER_APP" -g "$RESOURCE_GROUP" --type console --tail 300)
+          if grep -E "cache_redis_unavailable|memory_redis_unavailable" <<< "$logs"; then
+            echo "::error::the app could not reach Redis (check REDIS_URL in the ENV secret)"; exit 1
+          fi

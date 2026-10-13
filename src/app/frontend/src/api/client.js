@@ -48,25 +48,18 @@ function parseApiError(text) {
   }
 }
 
-// GET answers are kept for 10 minutes so switching windows back and forth doesn't re-query the backend each time
-// (and two components asking for the same path share one request). Failures are never kept, so retries really retry.
-// ponytail: fixed TTL, no manual invalidation; the data only changes on pipeline refreshes.
-const CACHE_TTL_MS = 10 * 60_000
-const cache = new Map() // path -> { at, promise }
+// Two components asking for the same path at the same time share one request. Nothing is kept afterwards:
+// the server caches the answers (Redis when configured), so the browser never shows stale data or another user's.
+const inflight = new Map() // path -> promise
 function get(path) {
   if (path.startsWith('/api/auth/')) return request(path)
-  const hit = cache.get(path)
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.promise
-  const promise = request(path)
-  cache.set(path, { at: Date.now(), promise })
-  promise.catch(() => cache.get(path)?.promise === promise && cache.delete(path))
+  const hit = inflight.get(path)
+  if (hit) return hit
+  const promise = request(path).finally(() => inflight.delete(path))
+  inflight.set(path, promise)
   return promise
 }
-const post = (path, body, timeoutMs) => {
-  // A different user may sign in next: never show them the previous user's data
-  if (path.startsWith('/api/auth/')) cache.clear()
-  return request(path, { method: 'POST', body: JSON.stringify(body ?? {}), timeoutMs })
-}
+const post = (path, body, timeoutMs) => request(path, { method: 'POST', body: JSON.stringify(body ?? {}), timeoutMs })
 
 // Each assistant call makes several sequential LLM calls (tens of seconds, minutes in the worst case).
 const ASSISTANT_TIMEOUT_MS = 300_000

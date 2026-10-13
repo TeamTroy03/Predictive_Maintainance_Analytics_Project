@@ -3,7 +3,7 @@ param acrName string
 param environmentName string
 param containerAppName string
 
-// Repository and tag, for example: pm-api:0.1
+// Repository and tag, for example: assets-api:0.1
 param imageName string
 
 // Secrets of the app (names as in .env); stored as Container App secrets, never in the image
@@ -19,6 +19,9 @@ param databricksToken string
 @secure()
 param azureOpenaiApiKey string
 
+@secure()
+param redisUrl string // internal address of the existing Redis app, same environment: redis://:<password>@redis:<port>/0
+
 // Plain settings
 param databricksHost string
 param databricksHttpPath string
@@ -27,7 +30,7 @@ param azureOpenaiDeploymentName string
 param openaiApiVersion string
 param goldCatalog string = 'data2026acc123456'
 param goldSchema string = 'team3'
-param goldTablePrefix string =
+param goldTablePrefix string = 'test_'
 
 resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
   name: acrName
@@ -90,6 +93,7 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = {
         { name: 'auth-users', value: authUsers }
         { name: 'databricks-token', value: databricksToken }
         { name: 'azure-openai-api-key', value: azureOpenaiApiKey }
+        { name: 'redis-url', value: redisUrl }
       ]
     }
 
@@ -114,6 +118,7 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = {
             { name: 'AZURE_OPENAI_API_KEY', secretRef: 'azure-openai-api-key' }
             { name: 'AZURE_OPENAI_DEPLOYMENT_NAME', value: azureOpenaiDeploymentName }
             { name: 'OPENAI_API_VERSION', value: openaiApiVersion }
+            { name: 'REDIS_URL', secretRef: 'redis-url' }
           ]
 
           // /health = process is up, /ready = Gold (Databricks) reachable

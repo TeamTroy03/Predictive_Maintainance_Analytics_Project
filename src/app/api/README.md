@@ -113,7 +113,7 @@ serves both. There is no `PM_` prefix.
 | `COOKIE_SECURE` | `true` (default): the cookie is sent over HTTPS only. Set `false` only for a browser that refuses Secure cookies on localhost |
 | `ENVIRONMENT` | `dev` (default) or `prod`; `prod` refuses to start unless `COOKIE_SECURE` is true, `JWT_SECRET` is long enough and `AUTH_USERS` is set |
 | `QUERY_TIMEOUT_SECONDS`, `QUERY_RETRIES` | Databricks query limits (defaults 30 and 2) |
-| `REDIS_URL`, `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, `NEO4J_DATABASE`, `GRAPH_TABLE_PREFIX`, `GRAPH_SYNC_ON_STARTUP` | Optional services of the assistant, read from the environment or `.env` by the agent code, not by `Settings`. See `src/app/agent/README.md` |
+| `REDIS_URL`, `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, `NEO4J_DATABASE`, `GRAPH_TABLE_PREFIX`, `GRAPH_SYNC_ON_STARTUP` | Optional services, read from the environment or `.env` by the agent code, not by `Settings`. With `REDIS_URL` the page endpoints (`/fleet/summary`, `/maintenance/summary`, `/assets`) also keep their 60 s response cache in Redis (`app/core/cache.py`, shared by replicas and kept over restarts); without it the cache lives in the process. The browser keeps no cache. See `src/app/agent/README.md` |
 
 ## Website login
 The website signs in with email and password. There is no registration: users are added by hand.

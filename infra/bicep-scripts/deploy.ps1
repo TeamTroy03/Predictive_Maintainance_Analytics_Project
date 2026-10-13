@@ -17,7 +17,6 @@ param(
 
 $SourceImage = "assets-api:latest"   # already built locally (docker images)
 $LocalImage = "assets-api:latest"  # name:tag pushed to ACR and run by the app
-$WorkspaceName = "log-assets"
 $RepoRoot = Resolve-Path "$PSScriptRoot\..\.."
 
 # App settings come from the repo .env (same names the app reads); nothing is typed or committed
@@ -37,9 +36,7 @@ az deployment group create `
     --template-file "$PSScriptRoot\infrastructure.bicep" `
     --parameters `
         location=$Location `
-        acrName=$AcrName `
-        environmentName=$EnvironmentName `
-        workspaceName=$WorkspaceName
+        acrName=$AcrName
 Assert-LastCommand
 
 docker image inspect $SourceImage --format "using {{.Id}}"
@@ -73,6 +70,7 @@ try {
         authUsers                 = $Settings.AUTH_USERS
         databricksToken           = $Settings.DATABRICKS_TOKEN
         azureOpenaiApiKey         = $Settings.AZURE_OPENAI_API_KEY
+        redisUrl                  = $Settings.REDIS_URL
         databricksHost            = $Settings.DATABRICKS_HOST
         databricksHttpPath        = $Settings.DATABRICKS_HTTP_PATH
         azureOpenaiEndpoint       = $Settings.AZURE_OPENAI_ENDPOINT

@@ -93,7 +93,7 @@ def flatten_properties(text: str | None) -> dict:
 def graph_prefix() -> str:
     """Table prefix of the graph tables: GRAPH_TABLE_PREFIX, else GOLD_TABLE_PREFIX (as for every Gold table). A separate
     variable lets the graph tables (e.g. `test_gold_kg_*`) differ from the prefix of the KPI tables."""
-    return os.environ["GRAPH_TABLE_PREFIX"] if "GRAPH_TABLE_PREFIX" in os.environ else os.getenv("GOLD_TABLE_PREFIX", "test_")
+    return os.environ["GRAPH_TABLE_PREFIX"] if "GRAPH_TABLE_PREFIX" in os.environ else os.getenv("GOLD_TABLE_PREFIX", "")
 
 
 def _graph_table(name: str) -> str:
