@@ -49,10 +49,27 @@ def check_sql(sql: str) -> str | None:
     # find() searches the whole tree, so a write hidden in a subquery/CTE is caught too
     if bad := statements[0].find(*_FORBIDDEN):
         return f"{type(bad).__name__.upper()} is not allowed, queries must be read-only"
-    ctes = {c.alias for c in statements[0].find_all(exp.CTE)}  # a CTE name is not a real table
-    if others := {exp.table_name(t) for t in statements[0].find_all(exp.Table)} - ctes - set(TABLES):
+    if fn := statements[0].find(exp.Anonymous):  # a function sqlglot does not know (ai_query, reflect, ...)
+        return f"function {fn.name} is not allowed"
+    others = {exp.table_name(t) for t in statements[0].find_all(exp.Table) if not _is_cte_reference(t)} - set(TABLES)
+    if others:
         return f"only the tables {', '.join(TABLES)} may be queried, not {', '.join(sorted(others))}"
     return None
+
+
+def _is_cte_reference(table: exp.Table) -> bool:
+    """True if `table` names a CTE defined in its query. A CTE is not recursive here, so a name inside its own definition
+    (WITH secrets AS (SELECT * FROM secrets)) is a real table, not a reference to itself."""
+    if table.db or not (name := table.name):
+        return False
+    if any(isinstance(a, exp.CTE) and a.alias == name for a in _ancestors(table)):
+        return False
+    return any(c.alias == name for c in table.root().find_all(exp.CTE))
+
+
+def _ancestors(node: exp.Expression):
+    while node := node.parent:
+        yield node
 
 
 def clean_sql(sql: str) -> str:

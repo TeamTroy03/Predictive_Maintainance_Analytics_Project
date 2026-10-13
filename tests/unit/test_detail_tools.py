@@ -2,9 +2,11 @@ import pytest
 
 from app.agent.tools import detail_tools as dt
 
-SCHEMA = {
-    "columns": [{"name": "site", "type": "string", "comment": "plant name"}, {"name": "mttr", "type": "double"}],
-    "sample": [{"site": "A", "mttr": "2.5"}],
+SCHEMA = {  # get_schema() result: {table name: {columns, sample}}
+    "kpi_table": {
+        "columns": [{"name": "site", "type": "string", "comment": "plant name"}, {"name": "mttr", "type": "double"}],
+        "sample": [{"site": "A", "mttr": "2.5"}],
+    }
 }
 
 

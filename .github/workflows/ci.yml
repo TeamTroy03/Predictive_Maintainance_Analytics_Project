@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # dummy values: app.agent.agent builds AzureChatOpenAI at import time, no call is made
+      AZURE_OPENAI_ENDPOINT: https://example.invalid
+      AZURE_OPENAI_API_KEY: dummy
+      AZURE_OPENAI_DEPLOYMENT_NAME: dummy
+      OPENAI_API_VERSION: "2024-12-01-preview"
+      GOLD_CATALOG: data2026acc123456
+      GOLD_SCHEMA: team3
+      AGENT_LOG_DIR: ${{ runner.temp }}/agent-log
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --locked --extra dev
+      - run: uv run pytest -m "not integration" tests/unit --junitxml=junit.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit
+          path: junit.xml
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/app/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/app/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build

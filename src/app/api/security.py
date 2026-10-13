@@ -30,6 +30,7 @@ def require_auth(
     if cookie and settings.cookie_auth_enabled:
         return "user:" + verify_session_token(cookie, settings)
     valid_keys = settings.api_key_list()
-    if api_key and any(secrets.compare_digest(api_key, k) for k in valid_keys):
+    # bytes: compare_digest raises TypeError (a 500) on a str with non-ASCII characters
+    if api_key and any(secrets.compare_digest(api_key.encode(), k.encode()) for k in valid_keys):
         return "api_key"
     raise ApiError(401, "unauthorized", "Missing or invalid credentials")

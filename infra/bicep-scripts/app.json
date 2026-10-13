@@ -1,0 +1,244 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.47.16.16243",
+      "templateHash": "16894867732125142832"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]"
+    },
+    "acrName": {
+      "type": "string"
+    },
+    "environmentName": {
+      "type": "string"
+    },
+    "containerAppName": {
+      "type": "string"
+    },
+    "imageName": {
+      "type": "string"
+    },
+    "jwtSecret": {
+      "type": "securestring"
+    },
+    "authUsers": {
+      "type": "securestring"
+    },
+    "databricksToken": {
+      "type": "securestring"
+    },
+    "azureOpenaiApiKey": {
+      "type": "securestring"
+    },
+    "databricksHost": {
+      "type": "string"
+    },
+    "databricksHttpPath": {
+      "type": "string"
+    },
+    "azureOpenaiEndpoint": {
+      "type": "string"
+    },
+    "azureOpenaiDeploymentName": {
+      "type": "string"
+    },
+    "openaiApiVersion": {
+      "type": "string"
+    },
+    "goldCatalog": {
+      "type": "string",
+      "defaultValue": "data2026acc123456"
+    },
+    "goldSchema": {
+      "type": "string",
+      "defaultValue": "team3"
+    },
+    "goldTablePrefix": {
+      "type": "string",
+      "defaultValue": "test_"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[format('{0}-pull', parameters('containerAppName'))]",
+      "location": "[parameters('location')]"
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName'))]",
+      "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-pull', parameters('containerAppName'))), 'AcrPull')]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-pull', parameters('containerAppName'))), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-pull', parameters('containerAppName')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2025-01-01",
+      "name": "[parameters('containerAppName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-pull', parameters('containerAppName'))))]": {}
+        }
+      },
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": true,
+            "targetPort": 8000,
+            "transport": "auto"
+          },
+          "registries": [
+            {
+              "server": "[reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), '2023-07-01').loginServer]",
+              "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-pull', parameters('containerAppName')))]"
+            }
+          ],
+          "secrets": [
+            {
+              "name": "jwt-secret",
+              "value": "[parameters('jwtSecret')]"
+            },
+            {
+              "name": "auth-users",
+              "value": "[parameters('authUsers')]"
+            },
+            {
+              "name": "databricks-token",
+              "value": "[parameters('databricksToken')]"
+            },
+            {
+              "name": "azure-openai-api-key",
+              "value": "[parameters('azureOpenaiApiKey')]"
+            }
+          ]
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "[parameters('containerAppName')]",
+              "image": "[format('{0}/{1}', reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), '2023-07-01').loginServer, parameters('imageName'))]",
+              "env": [
+                {
+                  "name": "ENVIRONMENT",
+                  "value": "prod"
+                },
+                {
+                  "name": "COOKIE_SECURE",
+                  "value": "true"
+                },
+                {
+                  "name": "JWT_SECRET",
+                  "secretRef": "jwt-secret"
+                },
+                {
+                  "name": "AUTH_USERS",
+                  "secretRef": "auth-users"
+                },
+                {
+                  "name": "DATABRICKS_HOST",
+                  "value": "[parameters('databricksHost')]"
+                },
+                {
+                  "name": "DATABRICKS_HTTP_PATH",
+                  "value": "[parameters('databricksHttpPath')]"
+                },
+                {
+                  "name": "DATABRICKS_TOKEN",
+                  "secretRef": "databricks-token"
+                },
+                {
+                  "name": "GOLD_CATALOG",
+                  "value": "[parameters('goldCatalog')]"
+                },
+                {
+                  "name": "GOLD_SCHEMA",
+                  "value": "[parameters('goldSchema')]"
+                },
+                {
+                  "name": "GOLD_TABLE_PREFIX",
+                  "value": "[parameters('goldTablePrefix')]"
+                },
+                {
+                  "name": "AZURE_OPENAI_ENDPOINT",
+                  "value": "[parameters('azureOpenaiEndpoint')]"
+                },
+                {
+                  "name": "AZURE_OPENAI_API_KEY",
+                  "secretRef": "azure-openai-api-key"
+                },
+                {
+                  "name": "AZURE_OPENAI_DEPLOYMENT_NAME",
+                  "value": "[parameters('azureOpenaiDeploymentName')]"
+                },
+                {
+                  "name": "OPENAI_API_VERSION",
+                  "value": "[parameters('openaiApiVersion')]"
+                }
+              ],
+              "probes": [
+                {
+                  "type": "Liveness",
+                  "httpGet": {
+                    "path": "/health",
+                    "port": 8000
+                  },
+                  "periodSeconds": 30
+                },
+                {
+                  "type": "Startup",
+                  "httpGet": {
+                    "path": "/health",
+                    "port": 8000
+                  },
+                  "periodSeconds": 5,
+                  "failureThreshold": 12
+                }
+              ],
+              "resources": {
+                "cpu": "[json('0.5')]",
+                "memory": "1Gi"
+              }
+            }
+          ],
+          "scale": {
+            "minReplicas": 1,
+            "maxReplicas": 1
+          }
+        }
+      },
+      "dependsOn": [
+        "[extensionResourceId(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-pull', parameters('containerAppName'))), 'AcrPull'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-pull', parameters('containerAppName')))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "fqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', parameters('containerAppName')), '2025-01-01').configuration.ingress.fqdn]"
+    },
+    "url": {
+      "type": "string",
+      "value": "[format('https://{0}', reference(resourceId('Microsoft.App/containerApps', parameters('containerAppName')), '2025-01-01').configuration.ingress.fqdn)]"
+    }
+  }
+}
