@@ -30,10 +30,10 @@ export default function Login() {
   }
 
   return (
-    <div className="flex h-screen items-center justify-center">
-      <form onSubmit={submit} className="w-80 rounded-lg border border-line bg-white p-8 shadow-sm">
+    <div className="flex h-screen items-center justify-center bg-ink">
+      <form onSubmit={submit} className="w-80 rounded-lg border-t-4 border-brand bg-panel p-8">
         <img src="/logo.svg" alt="" className="mx-auto h-12 w-12" />
-        <h1 className="mt-4 text-center text-lg font-semibold">
+        <h1 className="mt-4 text-center font-display text-3xl font-semibold">
           AssetPulse <span className="text-brand">AI</span>
         </h1>
         <p className="mt-1 text-center text-sm text-gray-600">Sign in to view fleet health and maintenance data.</p>
