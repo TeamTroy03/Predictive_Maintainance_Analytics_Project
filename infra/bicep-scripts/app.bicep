@@ -40,34 +40,11 @@ resource environment 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
   name: environmentName
 }
 
-resource pullIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: '${containerAppName}-pull'
-  location: location
-}
-
-resource acrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(acr.id, pullIdentity.id, 'AcrPull')
-  scope: acr
-  properties: {
-    roleDefinitionId: subscriptionResourceId(
-      'Microsoft.Authorization/roleDefinitions',
-      '7f951dda-4ed3-4680-a7ca-43fe172d538d'
-    )
-    principalId: pullIdentity.properties.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
+// Image pull uses the ACR admin user (infrastructure.bicep enables it): the pipeline identity cannot create
+// role assignments, so a managed identity with AcrPull is not possible. Switch back once an Owner can grant AcrPull.
 resource app 'Microsoft.App/containerApps@2025-01-01' = {
   name: containerAppName
   location: location
-
-  identity: {
-    type: 'UserAssigned'
-    userAssignedIdentities: {
-      '${pullIdentity.id}': {}
-    }
-  }
 
   properties: {
     managedEnvironmentId: environment.id
@@ -84,11 +61,13 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = {
       registries: [
         {
           server: acr.properties.loginServer
-          identity: pullIdentity.id
+          username: acr.listCredentials().username
+          passwordSecretRef: 'registry-password'
         }
       ]
 
       secrets: [
+        { name: 'registry-password', value: acr.listCredentials().passwords[0].value }
         { name: 'jwt-secret', value: jwtSecret }
         { name: 'auth-users', value: authUsers }
         { name: 'databricks-token', value: databricksToken }
@@ -150,10 +129,6 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = {
       }
     }
   }
-
-  dependsOn: [
-    acrPull
-  ]
 }
 
 output fqdn string = app.properties.configuration.ingress.fqdn
