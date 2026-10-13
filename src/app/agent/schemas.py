@@ -34,6 +34,8 @@ class AssistantAnswer(BaseModel):
 class State(TypedDict, total=False):
     question: str
     run_id: str  # correlation ID of this question, on every log line
+    conversation_id: str | None  # memory key: questions with the same ID share their history
+    history: str  # earlier turns of the conversation as prompt text ("" for the first question)
     plan: Plan
     feedback: str | None
     revisions: int

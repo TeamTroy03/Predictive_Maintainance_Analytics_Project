@@ -29,6 +29,9 @@ function useCurrentContext() {
 // The backend accepts a question of at most 1000 characters
 const MAX_QUESTION = 1000
 
+// randomUUID needs a secure context (https or localhost); the fallback keeps plain-http deployments working
+const newConversationId = () => crypto.randomUUID?.() ?? `c${Date.now()}${Math.random().toString(36).slice(2)}`
+
 function withContext(question, context) {
   const parts = Object.entries(context)
     .filter(([, v]) => v)
@@ -48,6 +51,8 @@ export function AgentProvider({ children }) {
   // { role: 'assistant', kind: 'error', content, error: true }
   const [messages, setMessages] = useState([])
   const [busy, setBusy] = useState(false)
+  // One memory per page load: the messages above are lost on reload, so the agent's memory starts fresh too
+  const conversationId = useRef(newConversationId())
   const context = useCurrentContext()
   const awaitingApproval = messages.some((m) => m.kind === 'plan' && m.state === 'pending')
 
@@ -62,7 +67,7 @@ export function AgentProvider({ children }) {
     add({ role: 'user', content: question })
     setBusy(true)
     try {
-      const res = await api.askAgent(withContext(question, { ...context, ...extraContext }))
+      const res = await api.askAgent(withContext(question, { ...context, ...extraContext }), conversationId.current)
       if (res.status === 'awaiting_approval') add({ role: 'assistant', kind: 'plan', plan: res.plan, runId: res.run_id, state: 'pending' })
       else add(answerMessage(res.result))
     } catch (err) {

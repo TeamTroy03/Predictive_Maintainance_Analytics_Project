@@ -27,6 +27,7 @@ from app.agent.prompts.system_prompt import (
     format_kpi_docs,
     format_tool_docs,
 )
+from app.agent.memory import format_history, make_memory
 from app.agent.schemas import AssistantAnswer, Plan, PlanReview, State
 from app.agent.tools.detail_tools import (
     get_schema,
@@ -118,6 +119,11 @@ TOOLS = {t.name: t for t in (get_kpi, query_kpi_table)}  # approved allowlist
 TOOL_DOCS = format_tool_docs(TOOLS)
 KPI_DOCS = format_kpi_docs(KPIS)
 
+def _today() -> str:
+    """Today's date (UTC, YYYY-MM-DD), read per call because the API process runs for days."""
+    return datetime.now(UTC).date().isoformat()
+
+
 # ---------- Steps ----------
 
 
@@ -129,9 +135,10 @@ def plan_text(question: str, p: Plan) -> str:
     return (SUMMARY_PROMPT | llm).invoke({"question": question, "plan": full}).content
 
 
-def plan(question: str, feedback: str | None = None) -> Plan:
+def plan(question: str, feedback: str | None = None, history: str = "") -> Plan:
     note = f"\n\nReviewer feedback to address: {feedback}" if feedback else ""
-    return _ask(Plan, PLANNER_PROMPT, tool_docs=TOOL_DOCS, kpi_docs=KPI_DOCS, question=question, feedback_note=note)
+    return _ask(Plan, PLANNER_PROMPT, today=_today(), history=history, tool_docs=TOOL_DOCS, kpi_docs=KPI_DOCS,
+                question=question, feedback_note=note)
 
 
 def check_plan(p: Plan) -> list[str]:
@@ -157,8 +164,9 @@ def check_plan(p: Plan) -> list[str]:
     return errors
 
 
-def judge_plan(question: str, p: Plan) -> PlanReview:
-    return _ask(PlanReview, JUDGE_PROMPT, tool_docs=TOOL_DOCS, question=question, plan=p.model_dump_json())
+def judge_plan(question: str, p: Plan, history: str = "") -> PlanReview:
+    return _ask(PlanReview, JUDGE_PROMPT, today=_today(), history=history, tool_docs=TOOL_DOCS, question=question,
+                plan=p.model_dump_json())
 
 
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")  # 12, 1,234.5, 0.93
@@ -247,7 +255,7 @@ MAX_REVISIONS = 2
 
 def planner_node(s: State) -> State:
     start = time.perf_counter()
-    p = plan(s["question"], s.get("feedback"))
+    p = plan(s["question"], s.get("feedback"), s.get("history", ""))
     log_event("plan_created", s["run_id"], revision=s.get("revisions", 0), approach=p.approach,
               steps=[step.model_dump() for step in p.steps], duration_s=_since(start))
     return {"plan": p}
@@ -259,7 +267,7 @@ def evaluator_node(s: State) -> State:
     if errors:  # deterministic violation: revise without calling the LLM
         review = PlanReview(verdict="revise", reasons=errors, feedback_for_planner=" ".join(errors))
     else:
-        review = judge_plan(s["question"], s["plan"])
+        review = judge_plan(s["question"], s["plan"], s.get("history", ""))
     revisions = s.get("revisions", 0) + (review.verdict == "revise")
     log_event("plan_reviewed", s["run_id"], verdict=review.verdict, reasons=review.reasons,
               by="check_plan" if errors else "judge", revisions=revisions, duration_s=_since(start))
@@ -294,6 +302,9 @@ def executor_node(s: State) -> State:
         log_event("not_executed", s["run_id"], verdict=s["verdict"], reasons=s["reasons"])
         return {"answer": _refuse(f"Plan not approved ({s['verdict']}): {' '.join(s['reasons'])}")}
     answer, trace = execute(s["question"], s["plan"], s["run_id"])
+    if answer.answer:  # remember answered questions only
+        memory.add(s.get("conversation_id"), {"question": s["question"], "answer": answer.answer,
+                                              "filters": answer.filters, "source_measure": answer.source_measure})
     return {"answer": answer, "trace": trace}
 
 
@@ -308,6 +319,7 @@ _graph.add_conditional_edges("evaluator", route_after_evaluator, ["planner", "ap
 _graph.add_edge("approval", "executor")
 _graph.add_edge("executor", END)
 app = _graph.compile(checkpointer=MemorySaver())  # checkpointer is required for interrupt()
+memory = make_memory()  # earlier questions of a conversation: Redis if REDIS_URL is set, else in this process
 
 
 def ask_on_console(text: str) -> bool:
@@ -329,15 +341,18 @@ def pending_plan(run_id: str) -> str | None:
     return state.values.get("plan_text") if state.next == ("approval",) else None
 
 
-def start_run(question: str, run_id: str | None = None) -> tuple[str, str | None, dict]:
+def start_run(question: str, run_id: str | None = None, conversation_id: str | None = None) -> tuple[str, str | None, dict]:
     """Run until the approval step. Returns (run_id, plan_text, state): plan_text is the plan waiting for
     approve/decline, or None when the run already finished (e.g. rejected plan) and state has the answer.
-    run_id lets the caller reuse its own correlation ID; it must not belong to an existing run."""
+    run_id lets the caller reuse its own correlation ID; it must not belong to an existing run.
+    conversation_id (optional) shares the memory of earlier questions with the same ID."""
     run_id = run_id or uuid.uuid4().hex
     start = time.perf_counter()
     log_event("run_started", run_id, question=question)
     try:
-        result = app.invoke({"question": question, "run_id": run_id}, _config(run_id))
+        state = {"question": question, "run_id": run_id, "conversation_id": conversation_id,
+                 "history": format_history(memory.history(conversation_id))}
+        result = app.invoke(state, _config(run_id))
     except Exception as e:  # e.g. the LLM still failing after its bounded retries
         log_event("run_failed", run_id, logging.ERROR, exc_info=True, error=str(e), duration_s=_since(start))
         raise

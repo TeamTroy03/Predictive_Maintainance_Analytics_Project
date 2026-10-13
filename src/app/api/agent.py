@@ -64,7 +64,7 @@ def _answered(run_id: str, state: dict) -> AssistantResponse:
     return AssistantResponse(status="answered", run_id=run_id, result=result)
 
 
-def start_question(question: str) -> AssistantResponse:
+def start_question(question: str, conversation_id: str | None = None) -> AssistantResponse:
     """Plan the question. Returns the plan awaiting approval, or the answer if no approval is needed
     (e.g. the plan was rejected: nothing runs and the reason is in limitations)."""
     agent = _agent()
@@ -73,7 +73,7 @@ def start_question(question: str) -> AssistantResponse:
     run_id = correlation_id.get()
     if run_id == "-" or agent.run_exists(run_id):
         run_id = uuid.uuid4().hex
-    run_id, plan, state = _call(agent.start_run, question, run_id)
+    run_id, plan, state = _call(agent.start_run, question, run_id, conversation_id)
     if plan is not None:
         return AssistantResponse(status="awaiting_approval", run_id=run_id, plan=plan)
     return _answered(run_id, state)

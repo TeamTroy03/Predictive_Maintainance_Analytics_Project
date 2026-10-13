@@ -113,8 +113,11 @@ export const api = {
 
   // AI agent, two steps: askAgent -> { status: 'awaiting_approval', run_id, plan } (or already 'answered'),
   // then approveAgent -> { status: 'answered', result: { answer, evidence, grounded, limitations, filters, source_measure } }
-  askAgent: (question) =>
-    USE_MOCK ? mock.askAgent(question) : post('/api/assistant/query', { question }, ASSISTANT_TIMEOUT_MS),
+  // conversationId: questions with the same ID share a memory (follow-ups like "and for pumps?")
+  askAgent: (question, conversationId) =>
+    USE_MOCK
+      ? mock.askAgent(question)
+      : post('/api/assistant/query', { question, conversation_id: conversationId }, ASSISTANT_TIMEOUT_MS),
   approveAgent: (runId, approved) =>
     USE_MOCK
       ? mock.approveAgent(runId, approved)

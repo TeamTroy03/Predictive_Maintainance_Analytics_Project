@@ -32,7 +32,8 @@ approves it, and only then are the approved tools run.
 | File | Contents |
 |---|---|
 | `agent.py` | The graph, `check_plan`, `execute`, the number check, logging, and the entry points (`run`, `start_run`, `finish_run`) |
-| `prompts/system_prompt.py` | The `ChatPromptTemplate`s (planner, judge, summary, executor, SQL writer) and the formatters that fill `{tool_docs}`, `{kpi_docs}`, `{kpi_formulas}` |
+| `prompts/system_prompt.py` | The `ChatPromptTemplate`s (planner, judge, summary, executor, SQL writer) and the formatters that fill `{tool_docs}`, `{kpi_docs}`, `{kpi_formulas}`. The planner and judge prompts also get `{today}` and `{history}` |
+| `memory.py` | Conversation memory (Redis or in-process), see [Conversation memory](#conversation-memory-memorypy) |
 | `schemas.py` | `Plan`, `PlanStep`, `PlanReview`, `AssistantAnswer` and the graph `State` |
 | `tools/` | The approved tools, see [`tools/README.md`](tools/README.md) |
 
@@ -129,8 +130,38 @@ the environment or `.env` (loaded with `python-dotenv`):
 | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `OPENAI_API_VERSION` | `AzureChatOpenAI` chat model |
 | `DATABRICKS_HOST`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_TOKEN`, `GOLD_CATALOG`, `GOLD_SCHEMA`, `GOLD_TABLE_PREFIX` | `get_kpi` and `query_kpi_table` (read when a tool runs, see `tools/README.md`) |
 | `LLM_TIMEOUT_SECONDS` (default `60`), `LLM_MAX_RETRIES` (default `2`) | optional, timeout of one LLM request and number of retries |
+| `REDIS_URL`, `MEMORY_TURNS` (default `6`), `MEMORY_TTL_SECONDS` (default `3600`) | optional, conversation memory (see below) |
 
 No secrets in code; deployed secrets come from Azure Key Vault.
+
+### Today's date
+
+The planner and judge prompts state today's date (UTC, read on every call by `_today()` in `agent.py`), so
+"now", "this month" or "last quarter" become whole `YYYY-MM` months. "Now" means the current month; Gold may not
+have data for all of it yet, `get_kpi` reports the as-of date and limitations.
+
+### Conversation memory (`memory.py`)
+
+`POST /assistant/query` accepts an optional `conversation_id` (the frontend sends one per page load). Questions
+with the same ID share a memory of the last `MEMORY_TURNS` answered questions, which is added to the planner and
+judge prompts so follow-ups such as "and for compressors?" can be resolved.
+
+- Only `{question, answer (max 500 chars), filters, source_measure}` is stored, never tool results. The prompts say
+  the history is not evidence, so every number still comes from a tool and the number check is unchanged.
+- Declined or rejected questions are not stored.
+- Backend: Redis when `REDIS_URL` is set and answers a ping at startup, otherwise a dict in the process (lost on
+  restart, the default for tests). A Redis error is logged to `agent.log` and the question is answered without memory.
+- The pending plans and the LangGraph checkpointer are still in memory, so the API still needs one worker.
+
+Run Redis locally and point the API at it:
+
+```bash
+docker run -d --name pm-redis -p 6379:6379 redis:7-alpine
+# .env
+REDIS_URL=redis://localhost:6379/0
+# look at a conversation
+docker exec pm-redis redis-cli lrange pm:memory:<conversation_id> 0 -1
+```
 
 ### Timeouts and retries
 
@@ -185,7 +216,9 @@ environment values are written. Follow one question with e.g.
 |---|---|
 | `tools/.tests/test_kpi_tools.py` | `get_kpi` against the real Gold tables (marked `integration`) |
 | `tests/unit/test_detail_tools.py` | SQL guardrail (`check_sql`, `limit_rows`) and the atomic tools. `test_get_kpi_schema` currently fails: it still passes the old single-table schema shape to `make_kpi_tools` |
-| `tests/unit/test_assistant.py` | The API's assistant endpoints with a **fake** agent (no LLM) |
+| `tests/unit/test_assistant.py` | The API's assistant endpoints with a **fake** agent (no LLM), including `conversation_id` |
+| `tests/unit/test_memory.py` | Conversation memory: in-process and Redis backends (fake client), cap, truncation, Redis failures |
+| `tests/unit/test_prompts.py` | The planner and judge prompts contain today's date and the conversation history |
 | `tests/integration/test_assistant_live.py` | API → agent → Azure OpenAI → Gold: approval, plan revision, rejection, full LLM transcript with `-s` |
 
 ## Not implemented yet
