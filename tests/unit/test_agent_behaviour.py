@@ -60,10 +60,10 @@ def test_check_plan_reports_violations(ag, step, fragment):
     assert errors and fragment in " ".join(errors)
 
 
-def test_check_plan_accepts_the_two_approved_tools(ag):
+def test_check_plan_accepts_the_approved_tools(ag):
     plan = make_plan(("get_kpi", {**GET_KPI, "equipment_type": "Pump"}), ("query_kpi_table", {"question": "top 5 sites"}))
     assert ag.check_plan(plan) == []
-    assert set(ag.TOOLS) == {"get_kpi", "query_kpi_table"}  # the allowlist itself
+    assert set(ag.TOOLS) == {"get_kpi", "query_kpi_table", "query_graph"}  # the allowlist itself
 
 
 def test_check_plan_reports_every_bad_step(ag):
