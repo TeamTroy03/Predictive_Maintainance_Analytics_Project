@@ -23,6 +23,8 @@ dependencies = [
     "databricks-sql-connector>=4.6.0",
     "databricks-sdk>=0.151.0",
     "redis>=8.1.0",
+    "neo4j>=6.4.0",
+    "networkx>=3.7",
 ]
 
 [project.optional-dependencies]

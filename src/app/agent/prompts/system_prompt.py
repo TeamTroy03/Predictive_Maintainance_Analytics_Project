@@ -48,6 +48,8 @@ PLANNER_PROMPT = ChatPromptTemplate.from_messages([
         "Valid kpi_name values with their meaning:\n"
         "{kpi_docs}\n"
         "KPI periods are whole months written YYYY-MM (start_month and end_month, both inclusive). "
+        "Use query_graph for relationship questions (which failure modes an asset or type has, repeat-failure "
+        "chains, what tends to fail after what) and get_kpi / query_kpi_table for numbers over periods. "
         "Use the most relevant tool(s) for the question and do not add steps it does not need. "
         "Use the exact argument names above. Do not execute anything and do not invent data or arguments.")),
     ("human", "{question}{feedback_note}"),

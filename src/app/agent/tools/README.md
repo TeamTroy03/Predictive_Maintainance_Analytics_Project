@@ -7,6 +7,7 @@ in the `TOOLS` allowlist in [`../agent.py`](../README.md).
 | File | Tool(s) | Status |
 |---|---|---|
 | `kpi_tools.py` | `get_kpi` | Implemented, queries Gold on Databricks (tested live, see Tests) |
+| `graph_tools.py`, `graph_sync.py` | `query_graph` (wired into `agent.py`); `graph_sync` is the CLI that loads the graph into Neo4j | Implemented; knowledge graph over Gold, Neo4j with in-memory fallback (see below) |
 | `detail_tools.py` | `query_kpi_table` (wired into `agent.py`); `get_kpi_schema`, `validate_and_format_kpi_query` (atomic variant, **not** wired) | Implemented; queries Gold on Databricks. Guardrail unit-tested (one test is stale, see below) |
 
 ## `kpi_tools.py`: `get_kpi`
@@ -179,3 +180,97 @@ single-table shape (`{"columns": [...], "sample": [...]}`) while `get_schema()` 
 `{table name: {"columns", "sample"}}`. Not covered yet: `query_with_retries` with a fake `write_sql`/`run_sql`,
 the table allowlist in `check_sql`, and `run_detail_sql`'s table renaming. The live path is exercised by
 `tests/integration/test_assistant_live.py` only when the planner picks this tool.
+
+## `graph_tools.py`: `query_graph` (knowledge graph, Neo4j with in-memory fallback)
+
+Relationship questions that the KPI star schema answers badly: which failure modes an asset or an equipment type has,
+repeat-failure chains, what tends to fail after what. **The LLM only picks a template and its arguments; it never writes
+Cypher or SQL**, and the numbers are the counts and sums stored on the Gold graph edges (periods and KPIs stay with `get_kpi`).
+
+```
+Gold dims + facts --(built in Databricks, not by this repo)--> gold_kg_nodes, gold_kg_edges   (Delta, source of truth)
+gold_kg_* --(graph_sync.py)--> Neo4j        query_graph --> GraphService --> Neo4jStore  (fixed Cypher per template, read-only session)
+gold_kg_* --(load_tables)--> in-process NetworkX graph                  \--> MemoryStore (same templates, same result shape)
+```
+
+### Templates (`TEMPLATES`) and arguments
+
+| `template` | Needs | Returns (rows) |
+|---|---|---|
+| `equipment_failure_modes` | `equipment_id` | per failure mode: `failures`, `downtime_hours`, `repeat_failures`, `last_failure_ts` |
+| `type_failure_profile` | `equipment_type` | per failure mode: `failures`, `equipment_affected`, `downtime_hours` |
+| `repeat_failure_chain` | `equipment_id` | each repeat failure: `work_order`, `repeats_work_order`, `failure_mode`, `gap_days`, `created_ts` |
+| `failures_after` | `failure_mode`, optional `equipment_type` | per next failure mode: `occurrences`, `avg_gap_days` |
+
+`limit` is 1-50 (default 20). `GraphRequest` (pydantic, `extra="forbid"`) rejects missing or unused arguments for the template and
+characters outside the allowed patterns; `agent.check_plan` applies the same model (`REQUESTS`), so a bad plan is caught before it
+runs. Names are matched case-insensitively against the node's business key or label, so `failure_mode` can be `BRG-WEAR` or
+`Bearing wear`. A name that is not in the graph gives no rows and a limitation, not an error.
+
+### The graph tables
+
+Already built in Databricks from the Gold tables; nothing in this repo creates them (columns and rules in
+`gold_layer_data_dictionary.md`, section 8): nodes `Site, EquipmentType, Equipment, Sensor, FailureMode, MaintenanceType, WorkOrder` (`node_id = <Type>:<business key>`),
+edges `LOCATED_AT, IS_OF_TYPE, HAS_SENSOR, PERFORMED_ON, HAS_FAILURE_MODE, HAS_MAINTENANCE_TYPE` and the derived
+`REPEATED_FAILURE` (from Gold's `is_repeat_failure`), `FOLLOWED_BY`, `EXPERIENCED_FAILURE`, `TYPE_PRONE_TO`. Unknown members and
+failure mode `NONE` are left out. Table names are `<prefix>gold_kg_nodes` / `<prefix>gold_kg_edges`; the prefix is
+`GRAPH_TABLE_PREFIX` when set, else `GOLD_TABLE_PREFIX` (so the graph tables can be `test_` while the KPI tables are not).
+
+### Backends and fallback
+
+| | |
+|---|---|
+| Neo4j | Used when `NEO4J_URI` is set. One fixed, parameterised Cypher query per template in `CYPHER`; values are only bound parameters; one read session per query with a server-side timeout (`NEO4J_TIMEOUT_SECONDS`, default 5). |
+| Memory | Otherwise, or when Neo4j fails: a NetworkX graph built from the same two Gold tables on first use and reused for `GRAPH_CACHE_SECONDS` (default 3600). Needs Databricks, not Neo4j. |
+
+The driver connects lazily. A Neo4j error (down, bad credentials, empty database) is logged as `graph_neo4j_unavailable`, the question
+is answered from memory with a limitation saying so, and Neo4j is not tried again for 60 s. Every result has `backend`
+(`neo4j` or `memory`). If Databricks is down as well, the tool raises and `execute` reports the failure in `limitations`.
+Neo4j only has the data of the last sync; the result shows the `gold_loaded_ts` it was built from. The API syncs by itself at startup (below), so after a new Gold run restart the API or run `graph_sync` by hand.
+
+### Sync at API startup
+
+When the API starts (`create_app` lifespan in `app/api/main.py`, so also in the Docker image that serves the site) and `NEO4J_URI` is set, `start_background_sync()` runs `startup_sync()` in a daemon thread. It compares the `gold_loaded_ts` of the Gold graph tables with the one stored in Neo4j (`GraphMeta`) and loads Neo4j **only when Gold is newer or Neo4j is empty**; otherwise a restart costs two small queries. It never blocks or fails the start: until the first sync has finished (about 35 s for 20k nodes / 49k edges) `query_graph` answers from the in-memory graph, and an error is only logged (`graph_sync_started`, `graph_sync_finished` with the result, `graph_sync_failed` with the error type). `GRAPH_SYNC_ON_STARTUP=false` switches it off. Run one API worker, like the rest of the assistant.
+
+### Loading Neo4j by hand (`graph_sync.py`)
+
+```bash
+docker run -d --name pm-neo4j -p 127.0.0.1:7687:7687 -e NEO4J_AUTH=neo4j/<password> neo4j:5
+# .env
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=<password>
+uv run python -m app.agent.tools.graph_sync --dry-run   # reads the Gold tables, prints the counts, no Neo4j
+uv run python -m app.agent.tools.graph_sync             # loads them (about a minute for 20k nodes / 49k edges)
+```
+
+Idempotent: `MERGE` by `node_id` and by (source, target, type), everything of a run carries one `sync_id`, and what is no longer in
+Gold is deleted at the end, so reruns do not duplicate. Each node has the labels `Node` and its type; relationship type = `edge_type`;
+the JSON `properties` become plain properties. A `(:GraphMeta {id: 'kg'})` node keeps the `gold_loaded_ts` of the copy. A node or edge
+type that is not in `NODE_TYPES` / `EDGE_TYPES` of `graph_sync.py` stops the sync before any write (labels cannot be parameters).
+The sync replaces everything in the target database: use a database of its own. Credentials come from `.env` locally and Key Vault when deployed.
+
+### Tests
+
+| File | What it covers |
+|---|---|
+| `tests/unit/test_graph_tools.py` | request validation, every template on a fixture graph (memory), Neo4j store with a fake runner (parameters bound, empty graph), fallback and cooldown, the tool, the sync with a fake driver (batches, order, labels, unknown types) |
+| `tests/integration/test_graph_neo4j.py` | contract test: the same fixture in a real throwaway Neo4j (`NEO4J_TEST_URI`), both backends must return identical rows, filters and limitations for every template; sync idempotent |
+
+Commands:
+
+```bash
+uv run python -m app.agent.tools.graph_sync --dry-run   # reads gold_kg_nodes / gold_kg_edges and prints the counts, no Neo4j
+uv run python -m app.agent.tools.graph_sync             # manual refresh of Neo4j (the API also does it when it starts, if Gold is newer)
+uv run pytest tests/unit/test_graph_tools.py            # unit tests of query_graph and the sync (no Neo4j, Databricks or LLM)
+docker exec pm-neo4j cypher-shell -u neo4j -p <password> "MATCH (n:Node) RETURN n.node_type, count(*) ORDER BY 1"   # look inside
+```
+
+Contract test of the two backends (needs a **throwaway** Neo4j, the test replaces everything in its database; it is skipped without `NEO4J_TEST_URI`):
+
+```bash
+docker run -d --name pm-neo4j-test -p 127.0.0.1:7687:7687 -e NEO4J_AUTH=neo4j/<test-password> neo4j:5
+# wait about 20 s, then (PowerShell: $env:NEO4J_TEST_URI="bolt://127.0.0.1:7687"; $env:NEO4J_TEST_PASSWORD="<test-password>")
+NEO4J_TEST_URI=bolt://127.0.0.1:7687 NEO4J_TEST_PASSWORD=<test-password> uv run pytest tests/integration/test_graph_neo4j.py -m integration -v
+docker rm -f pm-neo4j-test
+```

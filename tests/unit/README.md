@@ -15,6 +15,7 @@ passes in the CI `test` job.
 | `test_dashboard.py`, `test_assets.py` | the page endpoints (`/fleet/summary`, `/maintenance/summary`, `/assets*`, `/alarms`, `/maintenance/work-orders`) with a fake database |
 | `test_assistant.py` | `/assistant/query` and `/assistant/approve` with a fake agent (no LLM) |
 | `test_memory.py`, `test_prompts.py` | the agent's conversation memory (in-process and fake Redis) and the date/history in its prompts (no LLM) |
+| `test_graph_tools.py` (fixture in `graph_fixture.py`) | the agent's `query_graph` tool: request validation, every template on a tiny graph, Neo4j backend with a fake runner, fallback and cooldown, the sync into Neo4j with a fake driver and the sync at API startup (no Neo4j, Databricks or LLM) |
 | `test_detail_tools.py` | the SQL guardrail of the agent's `query_kpi_table` tool |
 | `test_continuation.py` | the data generator's `--continue` mode: no id reuse, no downtime overlap with delivered data, labor cost vs Silver's fixed FX rates, assets Silver quarantines |
 | `test_upload_to_databricks.py` | the volume upload and its conflict check, with a fake client (no network) |
