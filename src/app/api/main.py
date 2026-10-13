@@ -6,10 +6,12 @@ from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
 
+from app.api.dashboard import CACHE_SECONDS
 from app.api.db import GoldDB
 from app.api.errors import add_error_handlers
 from app.api.observability import correlation_middleware
 from app.api.routes import api, auth, public
+from app.core.cache import make_cache
 from app.core.config import Settings, get_settings
 from app.core.logging import setup_logging
 
@@ -39,7 +41,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(
         title="Team 3 Predictive Maintenance API", version="1.0.0", description=DESCRIPTION, lifespan=lifespan
     )
-    app.state.dashboard_cache = {}  # per app, so tests never share cached payloads
+    app.state.dashboard_cache = make_cache(CACHE_SECONDS)  # Redis if REDIS_URL is set; per app, so tests never share it
     app.state.login_failures = {}
     app.dependency_overrides[get_settings] = lambda: settings
     app.middleware("http")(correlation_middleware)

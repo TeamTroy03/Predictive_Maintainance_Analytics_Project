@@ -2,9 +2,9 @@
 ratios become percent and the alarm rate goes from per asset-day to per hour. The KPI table is monthly,
 so KPIs cover the whole period in Gold and trends are monthly points."""
 
-import time
 from collections.abc import Callable
-from typing import Any
+
+from pydantic import BaseModel
 
 from app.api.assets import STATUS_PARAMS, asset_cte
 from app.api.db import GoldDB
@@ -21,16 +21,17 @@ from app.api.schemas import (
     TrendPoint,
 )
 from app.api.shaping import kpi_rows, scale, utc
+from app.core.cache import TTLCache
 
 CACHE_SECONDS = 60  # Gold only changes when the pipeline loads it; this spares the warehouse repeat queries
 
 
-def cached(cache: dict, key: str, build: Callable[[], Any]) -> Any:
+def cached[M: BaseModel](cache: TTLCache, key: str, model: type[M], build: Callable[[], M]) -> M:
     hit = cache.get(key)
-    if hit and time.monotonic() - hit[0] < CACHE_SECONDS:
-        return hit[1]
+    if hit:
+        return model.model_validate_json(hit)
     value = build()
-    cache[key] = (time.monotonic(), value)
+    cache.set(key, value.model_dump_json())
     return value
 
 

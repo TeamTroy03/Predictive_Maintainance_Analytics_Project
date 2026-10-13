@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     databricks_token: SecretStr = SecretStr("")
     gold_catalog: str = "data2026acc123456"
     gold_schema: str = "team3"
-    gold_table_prefix: str = "test_"  # tables are named <prefix>gold_<name>, same as the agent
+    gold_table_prefix: str = ""  # tables are named <prefix>gold_<name>, same as the agent
     query_timeout_seconds: int = 30
     query_retries: int = 2
 

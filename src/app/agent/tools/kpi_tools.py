@@ -85,7 +85,7 @@ class KpiRequest(BaseModel):
 
 def _table(name: str) -> str:
     """Gold table name from config, e.g. team3.gold.test_gold_dim_site."""
-    table = f"{os.environ['GOLD_CATALOG']}.{os.environ['GOLD_SCHEMA']}.{os.getenv('GOLD_TABLE_PREFIX', 'test_')}gold_{name}"
+    table = f"{os.environ['GOLD_CATALOG']}.{os.environ['GOLD_SCHEMA']}.{os.getenv('GOLD_TABLE_PREFIX', '')}gold_{name}"
     if not re.fullmatch(r"[\w.]+", table):
         raise ValueError("GOLD_CATALOG, GOLD_SCHEMA and GOLD_TABLE_PREFIX may only contain letters, digits and _")
     return table

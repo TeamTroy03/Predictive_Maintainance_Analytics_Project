@@ -15,7 +15,7 @@ from app.api.errors import ApiError
 from app.core.config import Settings
 
 COOKIE_NAME = "access_token"
-ISSUER = "pm-api"
+ISSUER = "assets-api"
 
 _jwks_clients: dict[str, jwt.PyJWKClient] = {}
 

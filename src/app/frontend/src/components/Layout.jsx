@@ -1,5 +1,4 @@
-import { useState } from 'react'
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { NavLink, Outlet } from 'react-router-dom'
 import { AgentProvider, useAgent } from './AgentPanel.jsx'
 import AgentPanel from './AgentPanel.jsx'
 import AskAiButton from './AskAiButton.jsx'
@@ -9,71 +8,44 @@ import { AsOfProvider, useAsOf } from '../asOf.jsx'
 import { fmtDateTimeUtc, timeAgo } from '../format.js'
 
 const NAV = [
-  { to: '/', label: 'Fleet Health', icon: '▦' },
-  { to: '/alarms', label: 'Critical Exceptions', icon: '⚠' },
-  { to: '/equipment', label: 'Equipment', icon: '⚙' },
-  { to: '/sensors', label: 'Sensor Trends', icon: '∿' },
-  { to: '/maintenance', label: 'Maintenance', icon: '⚒' },
+  { to: '/', label: 'Fleet Health' },
+  { to: '/alarms', label: 'Critical Exceptions' },
+  { to: '/equipment', label: 'Equipment' },
+  { to: '/sensors', label: 'Sensor Trends' },
+  { to: '/maintenance', label: 'Maintenance' },
 ]
 
-// What the sidebar footer tells: how fresh the data is, not that the API answers
+// How fresh the data is (not whether the API answers); every "ago" on the pages counts from here
 function DataFreshness() {
   const { asOf, failed } = useAsOf()
   return (
-    <div className="border-t border-line p-3 text-xs text-gray-500">
-      {isMockMode && <div className="mb-2"><span className="rounded bg-warn/10 px-2 py-1 font-medium text-warn">Demo data (mock mode)</span></div>}
-      <div className="font-semibold uppercase tracking-wide text-[11px]">Data through</div>
-      <div className="mt-0.5 text-sm font-medium text-gray-800">
-        {asOf ? fmtDateTimeUtc(asOf) : failed ? 'Unknown' : 'Loading…'}
-      </div>
-      {asOf && <div className="mt-0.5">Latest event · {timeAgo(asOf)}</div>}
+    <div className="hidden text-right leading-tight lg:block" title={asOf ? `Latest event ${timeAgo(asOf)}` : undefined}>
+      {isMockMode && <span className="mr-3 rounded-sm bg-warn/25 px-1.5 py-0.5 text-xs font-medium text-amber-200">Demo data</span>}
+      <span className="text-xs text-gray-400">Data through </span>
+      <span className="num text-xs font-medium text-white">{asOf ? fmtDateTimeUtc(asOf) : failed ? 'unknown' : 'loading…'}</span>
     </div>
   )
 }
 
-// Hover menu in the header: lists every window; closes on leave or after picking one
-function NavMenu() {
-  const [open, setOpen] = useState(false)
-  const { pathname } = useLocation()
-  const current = NAV.find((n) => (n.to === '/' ? pathname === '/' : pathname.startsWith(n.to)))
+// All windows in view at once; the current one gets the lamp underline. Scrolls sideways on narrow screens.
+function NavTabs() {
   return (
-    <div className="relative" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
-      <button
-        onClick={() => setOpen(!open)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className="flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium hover:bg-gray-100"
-      >
-        <span>{current?.icon ?? '☰'}</span>
-        {current?.label ?? 'Windows'}
-        <span className="text-[10px] text-gray-500">▾</span>
-      </button>
-      {open && (
-        <div className="absolute left-0 top-full z-20 w-64 pt-1">
-          <div role="menu" className="rounded-md border border-line bg-white shadow-lg">
-            <nav className="space-y-0.5 p-2">
-              {NAV.map((item) => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  end={item.to === '/'}
-                  onClick={() => setOpen(false)}
-                  className={({ isActive }) =>
-                    `flex items-center gap-3 rounded-md px-3 py-2 text-sm ${
-                      isActive ? 'bg-brand-light font-semibold text-brand' : 'text-gray-700 hover:bg-gray-100'
-                    }`
-                  }
-                >
-                  <span className="w-4 text-center">{item.icon}</span>
-                  {item.label}
-                </NavLink>
-              ))}
-            </nav>
-            <DataFreshness />
-          </div>
-        </div>
-      )}
-    </div>
+    <nav aria-label="Windows" className="flex h-full min-w-0 items-stretch overflow-x-auto">
+      {NAV.map((item) => (
+        <NavLink
+          key={item.to}
+          to={item.to}
+          end={item.to === '/'}
+          className={({ isActive }) =>
+            `flex shrink-0 items-center border-b-2 px-3 text-sm font-medium ${
+              isActive ? 'border-brand-glow text-white' : 'border-transparent text-gray-300 hover:bg-white/10 hover:text-white'
+            }`
+          }
+        >
+          {item.label}
+        </NavLink>
+      ))}
+    </nav>
   )
 }
 
@@ -88,7 +60,7 @@ function ProfileMenu() {
       >
         <img src="/avatar-prof.png" alt={initials} className="h-full w-full object-cover" />
       </summary>
-      <div className="absolute right-0 z-10 mt-2 w-60 rounded-md border border-line bg-white p-3 text-sm shadow-lg">
+      <div className="absolute right-0 z-10 mt-2 w-60 rounded-md border border-line bg-panel p-3 text-sm text-ink shadow-lg">
         <div className="font-medium">{user.name}</div>
         <div className="truncate text-xs text-gray-500">{user.email}</div>
         <div className="mt-2 inline-block rounded bg-brand-light px-2 py-0.5 text-xs font-medium text-brand">{user.role}</div>
@@ -103,13 +75,16 @@ function ProfileMenu() {
 function TopBar() {
   const { open, setOpen } = useAgent()
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between border-b border-line bg-white px-6">
-      <div className="flex items-center gap-3">
-        <img src="/logo.svg" alt="" className="h-7 w-7 object-contain" />
-        <span className="font-semibold">AssetPulse <span className="text-brand">AI</span></span>
-        <NavMenu />
+    <header className="flex h-14 shrink-0 items-stretch justify-between gap-4 border-b border-white/10 bg-ink px-4 text-white md:px-6">
+      <div className="flex min-w-0 items-stretch gap-6">
+        <div className="flex shrink-0 items-center gap-3">
+          <img src="/logo.svg" alt="" className="h-7 w-7 object-contain" />
+          <span className="hidden font-display text-xl font-semibold sm:inline">AssetPulse <span className="text-brand-glow">AI</span></span>
+        </div>
+        <NavTabs />
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex shrink-0 items-center gap-4">
+        <DataFreshness />
         <AskAiButton onClick={() => setOpen(!open)} open={open} />
         <ProfileMenu />
       </div>

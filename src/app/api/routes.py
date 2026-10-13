@@ -159,7 +159,7 @@ def analytics_query(query: AnalyticsQuery, db: GoldDB = Depends(get_db)) -> Anal
     summary="Fleet health KPIs, status counts and monthly availability trend",
 )
 def get_fleet_summary(request: Request, db: GoldDB = Depends(get_db)) -> FleetSummary:
-    return cached(request.app.state.dashboard_cache, "fleet", lambda: fleet_summary(db))
+    return cached(request.app.state.dashboard_cache, "fleet", FleetSummary, lambda: fleet_summary(db))
 
 
 @api.get(
@@ -169,7 +169,7 @@ def get_fleet_summary(request: Request, db: GoldDB = Depends(get_db)) -> FleetSu
     summary="Maintenance KPIs, monthly MTBF/MTTR/cost and cost by maintenance type",
 )
 def get_maintenance_summary(request: Request, db: GoldDB = Depends(get_db)) -> MaintenanceSummary:
-    return cached(request.app.state.dashboard_cache, "maintenance", lambda: maintenance_summary(db))
+    return cached(request.app.state.dashboard_cache, "maintenance", MaintenanceSummary, lambda: maintenance_summary(db))
 
 
 # ---------------------------------------------------------------- equipment, sensors, alarms, work orders
@@ -196,7 +196,8 @@ def get_assets(
 
     if q:  # free text is not cached: every distinct search would add an entry
         return build()
-    return cached(request.app.state.dashboard_cache, f"assets|{status}|{has_sensors}|{page}|{page_size}", build)
+    key = f"assets|{status}|{has_sensors}|{page}|{page_size}"
+    return cached(request.app.state.dashboard_cache, key, AssetPage, build)
 
 
 @api.get(
