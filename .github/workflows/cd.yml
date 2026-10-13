@@ -23,7 +23,8 @@ concurrency:
 env:
   RESOURCE_GROUP: rg_gtgh_data_15
   AZURE_LOCATION: westeurope
-  ACR_NAME: dim02accwse12345
+  # globally unique: dim02accwse12345 (the example name in power.md) belongs to someone else
+  ACR_NAME: team3assetsacr
   CONTAINER_APP: assets-app
   # existing Container Apps environment that already runs Redis: same network, so REDIS_URL resolves
   CONTAINER_ENV: redis-assets2
