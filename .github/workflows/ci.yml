@@ -23,7 +23,7 @@ jobs:
       OPENAI_API_VERSION: "2024-12-01-preview"
       GOLD_CATALOG: data2026acc123456
       GOLD_SCHEMA: team3
-      AGENT_LOG_DIR: ${{ runner.temp }}/agent-log
+      AGENT_LOG_DIR: /tmp/agent-log
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
