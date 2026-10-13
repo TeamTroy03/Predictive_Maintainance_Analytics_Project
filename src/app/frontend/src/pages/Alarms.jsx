@@ -77,7 +77,7 @@ function GroupedAlarms({ groups, empty, asOf }) {
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-line bg-canvas text-left text-[11px] uppercase tracking-wide text-gray-500">
+          <tr className="border-b border-line bg-canvas text-left text-xs text-gray-600">
             <th className="w-8" />
             <th className={TH}>Asset</th>
             <th className={TH}>Severity</th>

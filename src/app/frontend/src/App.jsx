@@ -1,4 +1,4 @@
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Link } from 'react-router-dom'
 import Layout from './components/Layout.jsx'
 import FleetHealth from './pages/FleetHealth.jsx'
 import SensorTrends from './pages/SensorTrends.jsx'
@@ -8,6 +8,18 @@ import EquipmentDetail from './pages/EquipmentDetail.jsx'
 import Alarms from './pages/Alarms.jsx'
 import Login from './pages/Login.jsx'
 import { useAuth } from './auth.jsx'
+
+function NotFound() {
+  return (
+    <div className="py-16 text-center">
+      <h1 className="font-display text-3xl font-semibold">Page not found</h1>
+      <p className="mt-2 text-sm text-gray-600">This address doesn't match any window.</p>
+      <Link to="/" className="mt-4 inline-block rounded-md bg-brand px-4 py-1.5 text-sm font-medium text-white hover:opacity-90">
+        Go to Fleet Health
+      </Link>
+    </div>
+  )
+}
 
 export default function App() {
   const { user, loading } = useAuth()
@@ -23,6 +35,7 @@ export default function App() {
         <Route path="/equipment" element={<EquipmentList />} />
         <Route path="/equipment/:assetId" element={<EquipmentDetail />} />
         <Route path="/alarms" element={<Alarms />} />
+        <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>
   )

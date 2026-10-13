@@ -2,11 +2,11 @@
 
 export function Card({ title, subtitle, action, children, className = '' }) {
   return (
-    <section className={`rounded-lg border border-line bg-white ${className}`}>
+    <section className={`rounded-lg border border-line bg-panel ${className}`}>
       {(title || action) && (
-        <header className="flex items-start justify-between gap-4 border-b border-line px-4 py-3">
+        <header className="flex items-start justify-between gap-4 border-b border-line bg-gray-50 px-4 py-2.5">
           <div>
-            <h2 className="text-sm font-semibold">{title}</h2>
+            <h2 className="font-display text-lg font-semibold leading-tight">{title}</h2>
             {subtitle && <p className="mt-0.5 text-xs text-gray-500">{subtitle}</p>}
           </div>
           {action}
@@ -21,7 +21,7 @@ export function PageHeader({ title, subtitle, children }) {
   return (
     <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+        <h1 className="font-display text-3xl font-semibold leading-tight">{title}</h1>
         {subtitle && <p className="mt-1 text-sm text-gray-500">{subtitle}</p>}
       </div>
       <div className="flex flex-wrap items-center gap-2">{children}</div>
@@ -29,45 +29,64 @@ export function PageHeader({ title, subtitle, children }) {
   )
 }
 
+// The left edge is the status lamp: graphite when the value carries no verdict
+const LAMP = { neutral: 'bg-gray-300', good: 'bg-ok', warn: 'bg-warn', bad: 'bg-crit' }
+
 export function KpiCard({ label, value, unit, hint, tone = 'neutral' }) {
-  const toneClass = { neutral: 'text-gray-900', good: 'text-ok', warn: 'text-warn', bad: 'text-crit' }[tone]
+  const toneClass = { neutral: 'text-ink', good: 'text-ok', warn: 'text-warn', bad: 'text-crit' }[tone]
   return (
-    <div className="rounded-lg border border-line bg-white p-4">
-      <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{label}</div>
-      <div className={`num mt-1 text-2xl font-bold ${toneClass}`}>
-        {value}
-        {unit && <span className="ml-1 text-sm font-medium text-gray-500">{unit}</span>}
+    <div className="flex overflow-hidden rounded-lg border border-line bg-panel">
+      <div aria-hidden className={`w-1.5 shrink-0 ${LAMP[tone]}`} />
+      <div className="min-w-0 flex-1 px-4 py-3">
+        <div className="text-xs font-medium text-gray-600">{label}</div>
+        <div className={`num mt-0.5 font-display text-4xl font-semibold leading-none ${toneClass}`}>
+          {value}
+          {unit && <span className="ml-1 font-sans text-sm font-medium text-gray-500">{unit}</span>}
+        </div>
+        {hint && <div className="mt-1.5 text-xs text-gray-500">{hint}</div>}
       </div>
-      {hint && <div className="mt-1 text-xs text-gray-500">{hint}</div>}
     </div>
   )
 }
 
-const STATUS_STYLES = {
-  operational: 'bg-ok/10 text-ok border-ok/30',
-  warning: 'bg-warn/10 text-warn border-warn/30',
-  critical: 'bg-crit/10 text-crit border-crit/30',
-  offline: 'bg-off/10 text-gray-600 border-off/30',
-  info: 'bg-blue-50 text-blue-700 border-blue-200',
-  open: 'bg-blue-50 text-blue-700 border-blue-200',
-  overdue: 'bg-crit/10 text-crit border-crit/30',
-  completed: 'bg-ok/10 text-ok border-ok/30',
-  active: 'bg-crit/10 text-crit border-crit/30',
-  cleared: 'bg-off/10 text-gray-600 border-off/30',
+const LAMP_COLOR = {
+  operational: 'bg-ok', completed: 'bg-ok',
+  warning: 'bg-warn',
+  critical: 'bg-crit', overdue: 'bg-crit', active: 'bg-crit',
+  info: 'bg-brand', open: 'bg-brand',
+  offline: 'bg-off', cleared: 'bg-off',
 }
 
 export function StatusBadge({ status }) {
   return (
-    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase ${STATUS_STYLES[status] ?? STATUS_STYLES.offline}`}>
+    <span className="inline-flex items-center gap-1.5 text-xs font-medium capitalize text-gray-800">
+      <span aria-hidden className={`h-2 w-2 rounded-full ${LAMP_COLOR[status] ?? LAMP_COLOR.offline}`} />
       {status}
     </span>
   )
 }
 
-export const STATUS_COLORS = { operational: '#00a86b', warning: '#c98a00', critical: '#e5384f', offline: '#8c8c8c' }
+export const STATUS_COLORS = { operational: '#00a86b', warning: '#d99a00', critical: '#e5384f', offline: '#8c8c8c' }
+
+// The logo's heartbeat line with a pulse travelling along it (animation in index.css)
+export function PulseLine({ className = 'h-12 w-12', color = '#7e00c9' }) {
+  const d = 'M8 21.5H13.5L16.5 13L21.5 28L25 18.5L27.5 21.5H32'
+  const stroke = { stroke: color, strokeWidth: 2.75, strokeLinecap: 'round', strokeLinejoin: 'round' }
+  return (
+    <svg viewBox="0 0 40 40" className={className} fill="none" aria-hidden="true">
+      <path d={d} {...stroke} strokeOpacity="0.2" />
+      <path d={d} {...stroke} className="pulse-trace" pathLength="1" />
+    </svg>
+  )
+}
 
 export function Loading({ text = 'Loading…' }) {
-  return <div className="py-10 text-center text-sm text-gray-500">{text}</div>
+  return (
+    <div role="status" className="flex flex-col items-center gap-1 py-12 text-sm text-gray-600">
+      <PulseLine />
+      {text}
+    </div>
+  )
 }
 
 export function ErrorBox({ error, onRetry }) {
@@ -86,12 +105,12 @@ export function ErrorBox({ error, onRetry }) {
 
 export function Segmented({ options, value, onChange }) {
   return (
-    <div className="inline-flex rounded-md border border-line bg-white p-0.5">
+    <div className="inline-flex rounded-md border border-line bg-panel p-0.5">
       {options.map((opt) => (
         <button
           key={opt.value}
           onClick={() => onChange(opt.value)}
-          className={`rounded px-3 py-1 text-xs font-medium ${value === opt.value ? 'bg-brand text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+          className={`rounded-sm px-3 py-1 text-xs font-medium ${value === opt.value ? 'bg-ink text-white' : 'text-gray-600 hover:bg-gray-100'}`}
         >
           {opt.label}
         </button>
@@ -105,9 +124,9 @@ export function Table({ columns, rows, empty = 'No data', onRowClick }) {
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-line bg-canvas text-left text-[11px] uppercase tracking-wide text-gray-500">
+          <tr className="border-b border-line bg-gray-50 text-left text-xs text-gray-600">
             {columns.map((c) => (
-              <th key={c.key} className={`whitespace-nowrap px-3 py-2 font-semibold ${c.align === 'right' ? 'text-right' : ''}`}>
+              <th key={c.key} className={`whitespace-nowrap px-3 py-2 font-display text-sm font-semibold ${c.align === 'right' ? 'text-right' : ''}`}>
                 {c.label}
               </th>
             ))}

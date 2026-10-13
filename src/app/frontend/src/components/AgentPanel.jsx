@@ -46,7 +46,7 @@ const errorText = (err) => err.cause?.message ?? err.message
 export function AgentProvider({ children }) {
   const [open, setOpen] = useState(false)
   // { role: 'user', content }
-  // { role: 'assistant', kind: 'plan', plan, runId, state: 'pending' | 'approved' | 'declined' | 'expired' }
+  // { role: 'assistant', kind: 'plan', plan, runId, state: 'pending' }   (removed from the list once approved or declined)
   // { role: 'assistant', kind: 'answer', content, result }   (result = AssistantAnswer from the API)
   // { role: 'assistant', kind: 'error', content, error: true }
   const [messages, setMessages] = useState([])
@@ -58,7 +58,7 @@ export function AgentProvider({ children }) {
 
   const add = (message) => setMessages((m) => [...m, message])
   const addError = (err) =>
-    add({ role: 'assistant', kind: 'error', content: `Sorry, the agent could not answer: ${errorText(err)}`, error: true })
+    add({ role: 'assistant', kind: 'error', content: `The agent could not answer: ${errorText(err)}`, error: true })
   const answerMessage = (result) => ({ role: 'assistant', kind: 'answer', content: result.answer, result })
 
   async function ask(question, extraContext = {}) {
@@ -80,15 +80,14 @@ export function AgentProvider({ children }) {
   // The user's decision on a plan: approved -> the agent runs it and answers, declined -> nothing runs
   async function decide(runId, approved) {
     if (busy) return
-    const setState = (state) => setMessages((m) => m.map((x) => (x.runId === runId ? { ...x, state } : x)))
-    setState(approved ? 'approved' : 'declined')
+    // The decision removes the plan from the chat; the answer (or error) that follows replaces it
+    setMessages((m) => m.filter((x) => x.runId !== runId))
     setBusy(true)
     try {
       const res = await api.approveAgent(runId, approved)
       add(answerMessage(res.result))
     } catch (err) {
       if (err.cause?.code === 'unknown_run') {
-        setState('expired')
         add({ role: 'assistant', kind: 'error', content: 'This plan has expired (the server may have restarted). Please ask the question again.', error: true })
       } else {
         addError(err)
@@ -140,22 +139,22 @@ export default function AgentPanel() {
   }
 
   return (
-    <aside className="flex w-[368px] shrink-0 flex-col border-l border-line bg-white">
-      <div className="flex items-center justify-between border-b border-line px-4 py-3">
-        <div>
-          <div className="text-sm font-semibold">✦ AI Diagnostic Assistant</div>
-          <div className="mt-0.5 text-xs text-gray-500">
-            Context: {context.page}
-            {context.asset_id && <> · <span className="font-medium text-brand">{context.asset_id}</span></>}
+    <aside className="flex w-[368px] shrink-0 flex-col border-l border-line bg-panel max-md:fixed max-md:inset-0 max-md:z-30 max-md:w-full">
+      <div className="flex items-center justify-between gap-3 border-b border-line bg-gray-50 px-4 py-2.5">
+        <div className="min-w-0">
+          <div className="font-display text-lg font-semibold leading-tight">AI Diagnostic Assistant</div>
+          <div className="mt-0.5 truncate text-xs text-gray-500">
+            Looking at <span className="font-medium capitalize text-gray-800">{context.page}</span>
+            {context.asset_id && <span className="ml-1 rounded-sm bg-brand-light px-1.5 py-0.5 font-medium text-brand">{context.asset_id}</span>}
           </div>
         </div>
-        <div className="flex gap-1">
+        <div className="flex shrink-0 gap-1">
           {messages.length > 0 && (
-            <button onClick={() => setMessages([])} className="rounded px-2 py-1 text-xs text-gray-500 hover:bg-gray-100">
+            <button onClick={() => setMessages([])} className="rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-200">
               Clear
             </button>
           )}
-          <button onClick={() => setOpen(false)} className="rounded px-2 py-1 text-gray-500 hover:bg-gray-100" aria-label="Close">
+          <button onClick={() => setOpen(false)} className="rounded px-2 py-1 text-gray-600 hover:bg-gray-200" aria-label="Close assistant">
             ✕
           </button>
         </div>
@@ -164,7 +163,7 @@ export default function AgentPanel() {
       <div className="flex-1 space-y-3 overflow-y-auto p-4">
         {messages.length === 0 && (
           <div className="space-y-2">
-            <p className="text-sm text-gray-500">Ask about anomalies, failures, or maintenance. Try:</p>
+            <p className="text-sm text-gray-500">Ask about anomalies, failures or maintenance. For example:</p>
             {(SUGGESTIONS[context.page] ?? SUGGESTIONS.fleet).map((s) => (
               <button key={s} onClick={() => ask(s)} className="block w-full rounded-md border border-line px-3 py-2 text-left text-sm hover:border-brand hover:bg-brand-light/40">
                 {s}
@@ -178,8 +177,12 @@ export default function AgentPanel() {
               <PlanBubble message={m} busy={busy} onDecide={decide} />
             ) : (
               <div
-                className={`max-w-[90%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${
-                  m.role === 'user' ? 'bg-brand text-white' : m.error ? 'bg-crit/10 text-crit' : 'bg-canvas text-gray-800'
+                className={`max-w-[90%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm leading-relaxed ${
+                  m.role === 'user'
+                    ? 'bg-ink text-white'
+                    : m.error
+                      ? 'border-l-4 border-crit bg-crit/10 text-crit'
+                      : 'border-l-4 border-brand bg-gray-100 text-gray-800'
                 }`}
               >
                 {m.content}
@@ -193,7 +196,7 @@ export default function AgentPanel() {
         <div ref={bottomRef} />
       </div>
 
-      <form onSubmit={submit} className="flex items-end gap-2 border-t border-line p-3">
+      <form onSubmit={submit} className="flex items-end gap-2 border-t border-line bg-gray-50 p-3">
         <textarea
           ref={inputRef}
           rows={1}
@@ -207,7 +210,7 @@ export default function AgentPanel() {
             }
           }}
           placeholder="Ask the agent…"
-          className="max-h-48 min-w-0 flex-1 resize-none rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-brand"
+          className="max-h-48 min-w-0 flex-1 resize-none rounded-md border border-line bg-panel px-3 py-2 text-sm outline-none focus:border-brand"
         />
         <button disabled={busy || awaitingApproval || !input.trim()} className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
           Send
@@ -234,23 +237,24 @@ function Working() {
 
 // The agent's plan, shown before anything runs. Only the user's approval lets the agent query the data.
 function PlanBubble({ message, busy, onDecide }) {
-  const { plan, runId, state } = message
+  const { plan, runId } = message
+  // The plan leaves the chat as soon as it is decided, so it only ever shows the waiting state (amber lamp)
   return (
-    <div className="max-w-[90%] rounded-lg border border-brand/40 bg-brand-light/30 px-3 py-2 text-sm text-gray-800">
-      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-brand">Proposed plan</div>
-      <div className="whitespace-pre-wrap">{plan}</div>
-      {state === 'pending' ? (
+    <div className="flex max-w-[95%] overflow-hidden rounded-lg border border-line bg-panel text-sm text-gray-800">
+      <div aria-hidden className="w-1.5 shrink-0 bg-warn" />
+      <div className="min-w-0 px-3 py-2">
+        <div className="font-display text-base font-semibold">Plan waiting for your approval</div>
+        <div className="mt-1 whitespace-pre-wrap leading-relaxed">{plan}</div>
+        <p className="mt-2 text-xs text-gray-500">Nothing runs against the data until you approve.</p>
         <div className="mt-2 flex gap-2">
-          <button disabled={busy} onClick={() => onDecide(runId, true)} className="rounded-md bg-brand px-3 py-1 text-xs font-medium text-white disabled:opacity-40">
+          <button disabled={busy} onClick={() => onDecide(runId, true)} className="rounded-md bg-brand px-4 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-40">
             Approve
           </button>
-          <button disabled={busy} onClick={() => onDecide(runId, false)} className="rounded-md border border-line px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-40">
+          <button disabled={busy} onClick={() => onDecide(runId, false)} className="rounded-md border border-line px-4 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-40">
             Decline
           </button>
         </div>
-      ) : (
-        <div className="mt-2 text-xs capitalize text-gray-500">{state}</div>
-      )}
+      </div>
     </div>
   )
 }
