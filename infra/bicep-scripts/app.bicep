@@ -30,7 +30,7 @@ param azureOpenaiDeploymentName string
 param openaiApiVersion string
 param goldCatalog string = 'data2026acc123456'
 param goldSchema string = 'team3'
-param goldTablePrefix string = 'test_'
+param goldTablePrefix string = ''
 
 resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
   name: acrName

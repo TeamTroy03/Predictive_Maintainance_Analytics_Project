@@ -62,7 +62,7 @@
     },
     "goldTablePrefix": {
       "type": "string",
-      "defaultValue": "test_"
+      "defaultValue": ""
     }
   },
   "resources": [

@@ -73,7 +73,7 @@ def ready(request: Request, settings: Settings = Depends(get_settings)) -> JSONR
     body = Readiness(
         status="not_ready",
         gold=request.app.state.db.is_ready(),
-        auth_configured=bool(settings.api_key_list()) or settings.jwt_enabled,
+        auth_configured=bool(settings.api_key_list()) or settings.jwt_enabled or settings.cookie_auth_enabled,
     )
     if body.gold and body.auth_configured:
         body.status = "ready"
