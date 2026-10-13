@@ -54,7 +54,7 @@ Auth: ✔ = needs a valid session cookie, an `X-API-Key` (dev) or an Entra ID be
 | GET | `/maintenance/work-orders` | ✔ | Work orders: overdue first, then open, then the rest (`status`, `asset_id`, `limit` up to 500) |
 | GET | `/equipment/{equipment_id}/health` | ✔ | One asset's KPIs, latest alarms, open work orders |
 | GET | `/work-orders/overdue` | ✔ | Overdue work orders, paginated |
-| POST | `/assistant/query` | ✔ | Step 1: question in natural language; returns the agent's plan awaiting approval |
+| POST | `/assistant/query` | ✔ | Step 1: question in natural language (optional `conversation_id` for follow-up memory); returns the agent's plan awaiting approval |
 | POST | `/assistant/approve` | ✔ | Step 2: approve or decline the plan; returns the answer |
 
 Gold has no alarm acknowledgements, so there is no acknowledge endpoint.
@@ -105,7 +105,9 @@ The website signs in with email and password. There is no registration: users ar
 The agent (`src/app/agent/agent.py`) plans, reviews its plan, and **pauses until a human approves it**
 before any tool runs, so the assistant has two steps:
 
-1. `POST /assistant/query` `{"question": "..."}` → `status: "awaiting_approval"`, the `plan` and a `run_id`.
+1. `POST /assistant/query` `{"question": "...", "conversation_id": "..."}` → `status: "awaiting_approval"`, the `plan` and a `run_id`.
+   `conversation_id` is optional (`[A-Za-z0-9._-]`, up to 64 characters): questions with the same ID share the
+   agent's memory of earlier answers, so a follow-up like "and for pumps?" works (see the agent README).
    (If the plan is rejected as out of scope nothing runs and the response is already `status: "answered"`
    with the reason in `limitations`.)
 2. `POST /assistant/approve` `{"run_id": "...", "approved": true}` → `status: "answered"` with the

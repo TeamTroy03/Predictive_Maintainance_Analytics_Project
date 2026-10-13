@@ -22,6 +22,7 @@ class FakeAgent:
     def __init__(self):
         self.runs: dict[str, dict] = {}
         self.started_with: list[str] = []
+        self.conversations: list[str | None] = []
 
     def run_exists(self, run_id):
         return run_id in self.runs
@@ -29,8 +30,9 @@ class FakeAgent:
     def pending_plan(self, run_id):
         return PLAN if self.runs.get(run_id, {}).get("pending") else None
 
-    def start_run(self, question, run_id=None):
+    def start_run(self, question, run_id=None, conversation_id=None):
         self.started_with.append(run_id)
+        self.conversations.append(conversation_id)
         if "weather" in question:  # judge rejects: nothing to approve
             self.runs[run_id] = {"pending": False}
             return run_id, None, {"answer": AgentAnswer(
@@ -159,8 +161,21 @@ def test_llm_rate_limit_is_429(client, monkeypatch):
     class RateLimitError(Exception):
         pass
 
-    agent = SimpleNamespace(run_exists=lambda run_id: False, start_run=lambda q, r: (_ for _ in ()).throw(RateLimitError()))
+    agent = SimpleNamespace(run_exists=lambda run_id: False, start_run=lambda q, r, c: (_ for _ in ()).throw(RateLimitError()))
     monkeypatch.setattr(api_agent, "_agent", lambda: agent)
     response = ask(client)
     assert response.status_code == 429
     assert response.json()["error"]["code"] == "rate_limited"
+
+
+def test_conversation_id_reaches_the_agent(client, fake):
+    body = {"question": "and for pumps?", "conversation_id": "chat-1"}
+    assert client.post("/assistant/query", json=body, headers=HEADERS).status_code == 200
+    assert ask(client).status_code == 200  # no conversation_id: no memory
+    assert fake.conversations == ["chat-1", None]
+
+
+@pytest.mark.parametrize("bad", ["has space", "x" * 65, ""])
+def test_bad_conversation_id_is_rejected(client, fake, bad):
+    body = {"question": "q", "conversation_id": bad}
+    assert client.post("/assistant/query", json=body, headers=HEADERS).status_code == 422

@@ -291,7 +291,7 @@ def get_overdue_work_orders(
     responses={429: {"model": ErrorResponse, "description": "LLM rate limit"}},
 )
 def assistant_query(body: AssistantQuery) -> AssistantResponse:
-    return start_question(body.question)
+    return start_question(body.question, body.conversation_id)
 
 
 @api.post(

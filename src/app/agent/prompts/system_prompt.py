@@ -28,10 +28,21 @@ def format_kpi_formulas(kpis: dict) -> str:
 
 # ---------- Templates ----------
 
-# vars: tool_docs, kpi_docs, question, feedback_note ("" or the reviewer's feedback)
+# Appended to the planner and judge prompts; the history is only for understanding follow-up questions.
+HISTORY_NOTE = (
+    "{history}"
+    "Use the earlier conversation only to understand follow-up questions such as 'and for pumps?'. "
+    "It is not evidence: every number must still come from a tool. "
+)
+
+# vars: today (YYYY-MM-DD), history ("" or earlier turns), tool_docs, kpi_docs, question,
+#       feedback_note ("" or the reviewer's feedback)
 PLANNER_PROMPT = ChatPromptTemplate.from_messages([
     ("system", (
         "You plan read-only analytics for an industrial predictive-maintenance assistant. "
+        "Today's date is {today}. Resolve relative periods ('now', 'currently', 'this month', 'last quarter', "
+        "'year to date') to whole months from it; 'now' and 'current' mean the current month. "
+        + HISTORY_NOTE +
         "Return a plan of at most 4 steps using ONLY these tools:\n"
         "{tool_docs}\n"
         "Valid kpi_name values with their meaning:\n"
@@ -42,10 +53,13 @@ PLANNER_PROMPT = ChatPromptTemplate.from_messages([
     ("human", "{question}{feedback_note}"),
 ])
 
-# vars: tool_docs, question, plan (JSON)
+# vars: today (YYYY-MM-DD), history, tool_docs, question, plan (JSON)
 JUDGE_PROMPT = ChatPromptTemplate.from_messages([
     ("system", (
-        "You review a plan for a read-only maintenance assistant. These are the only approved tools "
+        "You review a plan for a read-only maintenance assistant. Today's date is {today}; judge relative "
+        "periods in the question ('now', 'this month', 'last quarter') against it. "
+        + HISTORY_NOTE +
+        "These are the only approved tools "
         "and what they do:\n{tool_docs}\n"
         "Approve only if the plan answers the question using these tools (a tool is suitable if its "
         "description covers what the question asks), stays read-only and invents no data. Otherwise "

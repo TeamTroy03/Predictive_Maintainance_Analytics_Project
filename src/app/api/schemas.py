@@ -294,6 +294,11 @@ class AssistantQuery(BaseModel):
         },
     )
     question: str = Field(min_length=1, max_length=1000)
+    conversation_id: str | None = Field(
+        None,
+        pattern=r"^[A-Za-z0-9._-]{1,64}$",
+        description="Questions sent with the same ID share a memory, so follow-ups ('and for pumps?') work",
+    )
 
 
 class ToolEvidence(BaseModel):

@@ -71,7 +71,7 @@ Status values: `operational`, `warning`, `critical`, `offline`. A field the back
 | GET | `/api/maintenance/summary` | `{ as_of, period_from, period_to, kpis: { mtbf_h, mttr_h, overdue_work_orders, maintenance_cost_eur, repeat_failure_pct, planned_pct }, monthly: [{ month, mtbf_h, mttr_h, cost_eur }], cost_by_type: [{ type, cost_eur }] }` |
 | GET | `/api/maintenance/work-orders?status=&asset_id=` | `[{ id, asset_id, type, status (open, overdue, completed or cancelled), priority, title, opened, due, completed, downtime_h, cost }]`; no technician column unless the data has one |
 | GET | `/api/alarms?asset_id=` | `[{ id, asset_id, severity (critical or warning), sensor, message, value, threshold, unit, time, acknowledged, state (active or cleared) }]` |
-| POST | `/api/assistant/query` | body `{ question }` (max 1000 chars; the panel writes the page context in front of the question) → `{ status: "awaiting_approval", run_id, plan }`, or already `{ status: "answered", result }` when the plan is out of scope |
+| POST | `/api/assistant/query` | body `{ question, conversation_id }` (max 1000 chars; the panel writes the page context in front of the question; `conversation_id` is one random ID per page load, it gives the agent memory of earlier questions) → `{ status: "awaiting_approval", run_id, plan }`, or already `{ status: "answered", result }` when the plan is out of scope |
 | POST | `/api/assistant/approve` | body `{ run_id, approved }` → `{ status: "answered", result: { answer, evidence: [{ tool, arguments, status, result }], grounded, limitations: [], filters: {}, source_measure } }` |
 
 **Not available yet:** acknowledging an alarm. Gold keeps no acknowledgements, so the button only works in demo mode.
