@@ -31,3 +31,5 @@ already use (`<prefix>gold_*`, prefix `test_` today: `gold_fact_sensor_reading`,
 `dim_site`, `dim_failure_mode`, `dim_maintenance_type`) are built by a Gold notebook that is not in this folder: a copy is in
 `.claude/reference/gold_layer.ipynb`, documented in `.claude/reference/gold_layer_data_dictionary.md`. Move it here when it is final.
 
+Two more tables, `<prefix>gold_kg_nodes` and `<prefix>gold_kg_edges`, hold a knowledge graph of the plant (nodes: sites, equipment types, equipment, sensors, failure modes, maintenance types, work orders; edges: the Gold keys plus repeat-failure and failure-sequence links). They are already built in Databricks from the Gold tables above; nothing in this repo creates them. The assistant's `query_graph` tool reads them (`src/app/agent/tools/README.md`) and they are described in section 8 of `.claude/reference/gold_layer_data_dictionary.md`.
+

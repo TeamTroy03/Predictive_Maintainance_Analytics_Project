@@ -62,7 +62,7 @@ teamwork, and a 5 % bonus for a small knowledge graph exposed through the assist
 context/             original spec PDF · silver_max/ (maintenance Silver rules)
 databricks/          common/ · bronze/ · silver/ · golden/ · jobs/  (not a Python package)
                      bronze/ and silver/ hold notebooks/scripts; common/ and jobs/ are still empty
-docs/                adr/ (0001: new data continues the delivered plant); the other deliverable .md files
+docs/                adr/ (0001: new data continues the delivered plant, 0002: knowledge graph); the other deliverable .md files
                      in the map above are still to be written
 fabric/              semantic-model/ (model diagrams, PNG) · report/  (PBIP / TMDL source still to come)
 infra/bicep-scripts/ main.bicep (skeleton: params only) + dev/prod .bicepparam
@@ -70,7 +70,7 @@ postman/             team3-pm-api.postman_collection.json
 src/app/
   api/               FastAPI: main.py · routes.py (all endpoints) · schemas.py (Pydantic) · services.py, kpis.py,
                      dashboard.py, assets.py (Gold queries and page payloads) · db.py · security.py · errors.py
-  agent/             LangChain Core + LangGraph assistant: agent.py · schemas.py · prompts/ · tools/
+  agent/             LangChain Core + LangGraph assistant: agent.py · memory.py · schemas.py · prompts/ · tools/ (get_kpi, query_kpi_table, query_graph, graph_sync)
   core/              config.py · logging.py · security.py (settings, JSON logs, password/session/JWT logic)
   frontend/          React + Vite web app (AssetPulse), talks to the API through /api
   services/          docstring-only stubs, not used: the service layer is src/app/api/services.py
@@ -96,6 +96,47 @@ cd src/app/frontend && npm install && npm run dev   # http://localhost:5173 (pro
 
 `uv run` uses the project's `.venv` automatically, so there is nothing to activate. When you add a dependency, use
 `uv add <package>` (or `uv add --optional dev <package>`) so that `pyproject.toml` and `uv.lock` change together.
+
+### Optional services: Redis and Neo4j
+
+The assistant works without them. Redis keeps the conversation memory (follow-up questions) across API restarts. Neo4j holds the knowledge graph (`gold_kg_nodes`, `gold_kg_edges`, already built in Databricks) that the `query_graph` tool queries; without it the tool builds the same graph in memory from the Gold tables. **Order:** containers up and answering, then the API (it copies the graph into Neo4j in a background thread when it starts, only if Gold has a newer load), then the frontend.
+
+```bash
+# Redis: conversation memory (follow-up questions). Neo4j: store of the knowledge graph used by the assistant's query_graph tool.
+docker run -d --name pm-redis -p 6379:6379 redis:7-alpine
+docker run -d --name pm-neo4j -p 127.0.0.1:7687:7687 -e NEO4J_AUTH=neo4j/<password> neo4j:5
+# next days: docker start pm-redis pm-neo4j      stop: docker stop pm-redis pm-neo4j      remove: docker rm -f pm-redis pm-neo4j
+
+# wait until both answer (Neo4j needs 10-20 s after it starts), otherwise the startup graph sync below fails once
+docker exec pm-redis redis-cli ping                                          # PONG
+docker exec pm-neo4j cypher-shell -u neo4j -p <password> "RETURN 1"          # prints 1
+```
+
+Add to `.env` (both services are optional: without them the memory stays in the process and the graph is built in memory):
+
+```
+REDIS_URL=redis://localhost:6379/0
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=<the password of docker run>
+GRAPH_TABLE_PREFIX=test_            # prefix of the gold_kg_* tables if it differs from GOLD_TABLE_PREFIX
+```
+
+```bash
+uv run uvicorn app.api.main:app --reload                # 2nd terminal: look for graph_sync_finished in the log (about 35 s the first time, then 'up to date')
+cd src/app/frontend && npm install && npm run dev       # 3rd terminal: http://localhost:5173
+```
+
+Knowledge graph commands:
+
+```bash
+uv run python -m app.agent.tools.graph_sync --dry-run   # reads gold_kg_nodes / gold_kg_edges and prints the counts, no Neo4j
+uv run python -m app.agent.tools.graph_sync             # manual refresh of Neo4j (the API also does it when it starts, if Gold is newer)
+uv run pytest tests/unit/test_graph_tools.py            # unit tests of query_graph and the sync (no Neo4j, Databricks or LLM)
+docker exec pm-neo4j cypher-shell -u neo4j -p <password> "MATCH (n:Node) RETURN n.node_type, count(*) ORDER BY 1"   # look inside
+```
+
+Run one API worker (pending plans live in memory). Details: [`src/app/agent/README.md`](src/app/agent/README.md) and [`src/app/agent/tools/README.md`](src/app/agent/tools/README.md).
 
 Folder READMEs: `[src/data/](src/data/README.md)` (data, generator, upload), `[src/app/api/](src/app/api/README.md)`,
 `[src/app/agent/](src/app/agent/README.md)`, `[src/app/frontend/](src/app/frontend/README.md)`,

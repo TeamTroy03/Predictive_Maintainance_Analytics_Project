@@ -35,6 +35,7 @@ from app.agent.tools.detail_tools import (
     make_sql_writer,
     run_detail_sql,
 )
+from app.agent.tools.graph_tools import GraphRequest, query_graph
 from app.agent.tools.kpi_tools import KPIS, KpiRequest, get_kpi
 
 load_dotenv()
@@ -111,7 +112,10 @@ def _ask(schema, prompt, **variables):
 query_kpi_table = make_detail_tool(get_schema, make_sql_writer(llm), run_detail_sql)
 
 
-TOOLS = {t.name: t for t in (get_kpi, query_kpi_table)}  # approved allowlist
+TOOLS = {t.name: t for t in (get_kpi, query_kpi_table, query_graph)}  # approved allowlist
+
+# tools whose arguments check_plan validates with the tool's own request model
+REQUESTS = {"get_kpi": KpiRequest, "query_graph": GraphRequest}
 
 # ---------- Prompt variables ----------
 
@@ -156,11 +160,11 @@ def check_plan(p: Plan) -> list[str]:
                 f"{s.tool}: missing arguments {sorted(missing)}, unknown arguments {sorted(unknown)}."
             )
             continue
-        if s.tool == "get_kpi":
+        if s.tool in REQUESTS:
             try:
-                KpiRequest(**s.args)  # same validation the tool applies: kpi name, YYYY-MM months, filters
+                REQUESTS[s.tool](**s.args)  # same validation the tool applies: names, YYYY-MM months, filters, templates
             except ValidationError as e:
-                errors.append("get_kpi: " + "; ".join(f"{'.'.join(map(str, x['loc'])) or 'request'}: {x['msg']}" for x in e.errors()))
+                errors.append(f"{s.tool}: " + "; ".join(f"{'.'.join(map(str, x['loc'])) or 'request'}: {x['msg']}" for x in e.errors()))
     return errors
 
 
@@ -208,6 +212,17 @@ def unverified_numbers(answer: AssistantAnswer, results: list) -> list[str]:
     return list(dict.fromkeys(bad))  # unique, in order
 
 
+def _trace(result) -> str:
+    """What to show next to a tool name in source_measure: the SQL of the detail tool, template and backend of the graph tool."""
+    if not isinstance(result, dict):
+        return ""
+    if "sql" in result:
+        return f" [{result['sql']}]"
+    if "template" in result:
+        return f" [{result['template']} via {result.get('backend')}]"
+    return ""
+
+
 def execute(question: str, p: Plan, run_id: str = "-") -> tuple[AssistantAnswer, list[dict]]:
     """Run the approved steps; returns the answer and the trace of every tool call (tool, args, ok, result)."""
     limitations, results, oks = [], [], []
@@ -230,7 +245,7 @@ def execute(question: str, p: Plan, run_id: str = "-") -> tuple[AssistantAnswer,
     start = time.perf_counter()
     answer = _ask(AssistantAnswer, EXECUTOR_PROMPT, question=question, tool_messages=tool_messages)
     answer.source_measure = ", ".join(  # traceable, not LLM-written; the detail tool also shows the SQL it ran
-        c["name"] + (f" [{r['sql']}]" if isinstance(r, dict) and "sql" in r else "") for c, r in zip(calls, results)
+        c["name"] + _trace(r) for c, r in zip(calls, results)
     )
     answer.limitations += limitations
     if lines := [f"{c['name']}: value={r['value']} {r.get('unit', '')}, rows={r.get('row_count')}, as of {r.get('as_of_ts')}"

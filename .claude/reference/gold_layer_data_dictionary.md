@@ -1,6 +1,6 @@
 # Gold Layer Data Dictionary: Team 3 Predictive Maintenance
 
-This document describes every table the Gold part of the pipeline creates: 6 dimensions, 3 fact tables, and 1 KPI table plus its view. It is derived from the last three cells of `test_bronze_pipeline.ipynb` (Gold cells 1, 2 and 3 of 3).
+This document describes every table the Gold part of the pipeline creates: 6 dimensions, 3 fact tables, and 1 KPI table plus its view, and the 2 knowledge graph tables (section 8). Sections 1-7 are derived from the Gold cells of `test_pipeline.ipynb` (Gold cells 1, 2 and 3 of 3); the knowledge graph tables of section 8 were built in Databricks from those Gold tables.
 
 All tables are Delta tables in `{CATALOG_NAME}.{SCHEMA_NAME}` (currently `team3`). Names carry a `test_` prefix in the notebook, for example `test_gold_dim_site`. Table names below are shown without the prefix.
 
@@ -392,3 +392,93 @@ The notebook prints PASS or FAIL for each check and stops (`assert`) if any fail
 8. **Equipment history is not kept.** `dim_equipment` is SCD type 1, so site transfers or criticality changes overwrite the old values.
 9. **Unknown equipment** appears in the facts (key `-1`) but is excluded from the KPI table, so KPI totals can be lower than fact totals when orphan rows exist.
 10. **Exact column types** for pass-through columns come from Silver. Run `DESCRIBE TABLE` on a Gold table to confirm them.
+
+---
+
+## 8. Knowledge graph tables
+
+Two extra Gold tables describe the plant as a graph. They are built in Databricks **after** the
+KPI table, **only from the Gold tables above** (nothing is inferred), with a full overwrite and `gold_loaded_ts` like the other Gold tables. The assistant
+tool `query_graph` reads them (through Neo4j or an in-memory copy, see `src/app/agent/tools/README.md`).
+
+### 8.1 `gold_kg_nodes`
+
+**What it contains:** one row per node: a dimension member, a sensor or a work order.
+
+**Grain:** one node. **Key:** `node_id` (unique, checked).
+
+| Column | Description |
+|---|---|
+| `node_id` | `<node_type>:<business_key>`, for example `Equipment:EQ-10001`, `FailureMode:BRG-WEAR`. Business keys, not surrogate keys, so a user or a tool can type them |
+| `node_type` | `Site`, `EquipmentType`, `Equipment`, `Sensor`, `FailureMode`, `MaintenanceType` or `WorkOrder` |
+| `business_key` | `site_code`, `equipment_type`, `equipment_id`, `sensor_id`, `failure_mode_code`, `maintenance_type` or `work_order_id` |
+| `label` | Readable name: site name, equipment name, failure mode description; the business key when there is none |
+| `properties` | JSON string with the attributes of the node type (table below). Null attributes are left out |
+| `source_table` | Gold table the node comes from |
+| `gold_loaded_ts` | Load timestamp |
+
+| `node_type` | Source | Attributes in `properties` |
+|---|---|---|
+| `Site` | `dim_site` | `country`, `timezone` |
+| `EquipmentType` | `dim_equipment_type` | none |
+| `Equipment` | `dim_equipment` | `manufacturer`, `model_number`, `production_line`, `criticality`, `status`, `install_date` |
+| `Sensor` | `fact_sensor_reading`, one node per `sensor_id` | `sensor_type`, `reading_count`, `alarm_count`, `last_reading_ts` |
+| `FailureMode` | `dim_failure_mode` | none |
+| `MaintenanceType` | `dim_maintenance_type` | `is_planned` |
+| `WorkOrder` | `fact_maintenance_work_order` (joined to `fact_downtime` per work order) | `priority`, `status`, `root_cause_code`, `created_ts`, `closed_ts`, `maintenance_cost_eur`, `is_overdue`, `has_temporary_fix`, `downtime_type`, `downtime_hours` |
+
+### 8.2 `gold_kg_edges`
+
+**What it contains:** one row per directed edge between two nodes.
+
+**Grain:** one edge per (`src_id`, `dst_id`, `edge_type`).
+
+| Column | Description |
+|---|---|
+| `src_id` | `node_id` of the node the edge starts at |
+| `dst_id` | `node_id` of the node the edge points to |
+| `edge_type` | Type of the relation (table below) |
+| `weight` | `1` for links that follow a key; a count for the aggregated edges; a gap in days (rounded to 2 decimals) for `REPEATED_FAILURE` and `FOLLOWED_BY` |
+| `properties` | JSON string with extra attributes of the edge type (table below), or null |
+| `source_table` | Gold table the edge comes from |
+| `gold_loaded_ts` | Load timestamp |
+
+| `edge_type` | From -> to | Meaning, `weight` and `properties` |
+|---|---|---|
+| `LOCATED_AT` | Equipment -> Site | The asset's site (`dim_equipment.site_key`) |
+| `IS_OF_TYPE` | Equipment -> EquipmentType | The asset's type (`dim_equipment.equipment_type_key`) |
+| `HAS_SENSOR` | Equipment -> Sensor | The sensor reported readings for the asset |
+| `PERFORMED_ON` | WorkOrder -> Equipment | The work order is for this asset. Work orders without a known asset get no edge |
+| `HAS_FAILURE_MODE` | WorkOrder -> FailureMode | Failure mode of the work order. No edge for `NONE` (planned work) or an unknown mode |
+| `HAS_MAINTENANCE_TYPE` | WorkOrder -> MaintenanceType | Maintenance type of the work order |
+| `REPEATED_FAILURE` | WorkOrder -> WorkOrder | A repeat failure (Gold's `is_repeat_failure`) -> the earlier failure of the same asset and mode. `weight` = days from the end of the earlier failure to the start of this one. `properties`: `failure_mode` |
+| `FOLLOWED_BY` | WorkOrder -> WorkOrder | An unplanned failure -> the next unplanned failure of the same asset, in any mode. `weight` = days between them. `properties`: `from_mode`, `to_mode` |
+| `EXPERIENCED_FAILURE` | Equipment -> FailureMode | `weight` = number of unplanned failures of that asset and mode. `properties`: `downtime_hours`, `repeat_failures`, `last_failure_ts` |
+| `TYPE_PRONE_TO` | EquipmentType -> FailureMode | `weight` = number of unplanned failures of that type and mode. `properties`: `equipment_affected`, `downtime_hours` |
+
+### 8.3 Rules
+
+- **Left out:** the Unknown members (key `-1`) of every dimension and the failure mode `NONE`, so planned work does not become a hub that links everything.
+- **Failures** (basis of the four derived edge types) are the rows of `fact_downtime` with `downtime_type = 'unplanned'`, a known asset and a real failure mode. This is the population of the KPI failures, so graph counts and KPI counts agree.
+- Sensor readings are **not** nodes, only per-sensor aggregates (`Sensor` attributes), so the graph stays small.
+- `source_table` carries the table name as it is in the workspace, with the `test_` prefix in the test notebook.
+- The `properties` column is JSON text, so the tables stay flat; the loaders turn it into plain properties.
+
+### 8.4 Reconciliation checks
+
+These hold for the delivered tables (checked read-only against the Gold tables); repeat them after every rebuild.
+
+| Check |
+|---|
+| `node_id` is unique; no edge points to a source or target node that does not exist |
+| Node counts equal the dimension counts without the Unknown row (and without `NONE` for failure modes); `WorkOrder` nodes = rows of `fact_maintenance_work_order`; `Sensor` nodes = distinct sensors |
+| `REPEATED_FAILURE` edges = failures flagged `is_repeat_failure` |
+| `FOLLOWED_BY` edges = failures minus assets with failures (each asset's first failure has no predecessor) |
+| Sum of `weight` of `EXPERIENCED_FAILURE` edges = number of failures; same for `TYPE_PRONE_TO` |
+
+### 8.5 Things to know
+
+1. **Counts have no period.** The graph covers all data in Gold. Use the KPI layer for figures by month.
+2. **`FOLLOWED_BY` shows a sequence, not a cause.** It links consecutive failures of one asset.
+3. **Same SCD limit as `dim_equipment`.** Attributes are the latest values; a site transfer overwrites the old one.
+4. **A copy is kept outside Databricks** for the assistant (Neo4j, or in memory), refreshed from these tables when the API starts and Gold has a newer `gold_loaded_ts`.

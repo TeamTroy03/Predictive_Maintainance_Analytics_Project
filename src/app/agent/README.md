@@ -20,7 +20,7 @@ execution path.
 
 The LLM must not bypass the semantic model, fabricate data or perform consequential actions.
 
-_Bonus (§9): one Knowledge Graph query exposed as a tool._
+_Bonus (§9): one Knowledge Graph query exposed as a tool: done, `query_graph` (see below and `tools/README.md`)._
 
 ## How `agent.py` works
 
@@ -91,6 +91,7 @@ Run on every plan before the judge LLM sees it. A plan is rejected for:
 
 | Tool | Status |
 |---|---|
+| `query_graph` | **Real.** From `tools/graph_tools.py`: relationship questions (failure modes of an asset or type, repeat-failure chains, what fails after what) over the knowledge graph built from Gold (`gold_kg_nodes`, `gold_kg_edges`). Fixed templates, no LLM-written Cypher; Neo4j when `NEO4J_URI` is set, in-memory graph as fallback. See [`tools/README.md`](tools/README.md). |
 | `get_kpi` | **Real.** From `tools/kpi_tools.py`: governed KPI from the Gold table `gold_kpi_equipment_month`, calculated in Databricks. See [`tools/README.md`](tools/README.md). |
 | `query_kpi_table` | **Real.** From `tools/detail_tools.py`; its only argument is a plain-language `question`. An LLM writes one read-only SQL SELECT on `kpi_table` and the dimensions `dim_equipment`, `dim_equipment_type` and `dim_site`, a sqlglot guardrail checks it, Databricks runs it (at most 200 rows, up to 3 attempts, each failure goes back to the writer). Its result has the `sql` that ran, `rows`, `row_count` and `attempts`. |
 
@@ -131,6 +132,8 @@ the environment or `.env` (loaded with `python-dotenv`):
 | `DATABRICKS_HOST`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_TOKEN`, `GOLD_CATALOG`, `GOLD_SCHEMA`, `GOLD_TABLE_PREFIX` | `get_kpi` and `query_kpi_table` (read when a tool runs, see `tools/README.md`) |
 | `LLM_TIMEOUT_SECONDS` (default `60`), `LLM_MAX_RETRIES` (default `2`) | optional, timeout of one LLM request and number of retries |
 | `REDIS_URL`, `MEMORY_TURNS` (default `6`), `MEMORY_TTL_SECONDS` (default `3600`) | optional, conversation memory (see below) |
+| `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, `NEO4J_DATABASE` (default `neo4j`), `NEO4J_TIMEOUT_SECONDS` (default `5`) | optional, `query_graph` backend; unset = in-memory graph (see `tools/README.md`) |
+| `GRAPH_TABLE_PREFIX` (default: `GOLD_TABLE_PREFIX`), `GRAPH_CACHE_SECONDS` (default `3600`), `GRAPH_SYNC_ON_STARTUP` (default `true`) | optional, prefix of the `gold_kg_*` tables, cache time of the in-memory graph, and whether the API copies the Gold graph into Neo4j at startup when Gold has a newer load |
 
 No secrets in code; deployed secrets come from Azure Key Vault.
 
@@ -161,6 +164,46 @@ docker run -d --name pm-redis -p 6379:6379 redis:7-alpine
 REDIS_URL=redis://localhost:6379/0
 # look at a conversation
 docker exec pm-redis redis-cli lrange pm:memory:<conversation_id> 0 -1
+```
+
+### Knowledge graph (`query_graph`)
+
+Relationship questions (failure modes of an asset or type, repeat-failure chains, what fails after what) go to the `query_graph` tool (`tools/graph_tools.py`, all details in [`tools/README.md`](tools/README.md)). The graph is the pair of Gold tables `gold_kg_nodes` / `gold_kg_edges`, already built in Databricks; this code only reads them. The LLM picks one of four fixed templates and never writes Cypher.
+
+- **Backend:** Neo4j when `NEO4J_URI` is set, otherwise (or when Neo4j fails) an in-memory NetworkX graph built from the same two tables. The result says which one answered (`backend`) and adds a limitation when it fell back. Neo4j is not retried for 60 s after a failure.
+- **Sync:** when the API starts it copies the tables into Neo4j in a background thread, only if Gold's `gold_loaded_ts` is newer than the copy (`GRAPH_SYNC_ON_STARTUP=false` disables it). Start Neo4j first and wait until it answers, otherwise that one sync fails and Neo4j stays empty until the next restart.
+- **Tables:** `<prefix>gold_kg_*`, prefix from `GRAPH_TABLE_PREFIX`, else `GOLD_TABLE_PREFIX` (a `.env` with `GOLD_TABLE_PREFIX=""` and tables named `test_gold_kg_*` needs `GRAPH_TABLE_PREFIX=test_`).
+
+Containers, `.env` and commands (Redis and Neo4j together):
+
+```bash
+# Redis: conversation memory (follow-up questions). Neo4j: store of the knowledge graph used by the assistant's query_graph tool.
+docker run -d --name pm-redis -p 6379:6379 redis:7-alpine
+docker run -d --name pm-neo4j -p 127.0.0.1:7687:7687 -e NEO4J_AUTH=neo4j/<password> neo4j:5
+# next days: docker start pm-redis pm-neo4j      stop: docker stop pm-redis pm-neo4j      remove: docker rm -f pm-redis pm-neo4j
+
+# wait until both answer (Neo4j needs 10-20 s after it starts), otherwise the startup graph sync below fails once
+docker exec pm-redis redis-cli ping                                          # PONG
+docker exec pm-neo4j cypher-shell -u neo4j -p <password> "RETURN 1"          # prints 1
+```
+
+Add to `.env` (both services are optional: without them the memory stays in the process and the graph is built in memory):
+
+```
+REDIS_URL=redis://localhost:6379/0
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=<the password of docker run>
+GRAPH_TABLE_PREFIX=test_            # prefix of the gold_kg_* tables if it differs from GOLD_TABLE_PREFIX
+```
+
+Commands:
+
+```bash
+uv run python -m app.agent.tools.graph_sync --dry-run   # reads gold_kg_nodes / gold_kg_edges and prints the counts, no Neo4j
+uv run python -m app.agent.tools.graph_sync             # manual refresh of Neo4j (the API also does it when it starts, if Gold is newer)
+uv run pytest tests/unit/test_graph_tools.py            # unit tests of query_graph and the sync (no Neo4j, Databricks or LLM)
+docker exec pm-neo4j cypher-shell -u neo4j -p <password> "MATCH (n:Node) RETURN n.node_type, count(*) ORDER BY 1"   # look inside
 ```
 
 ### Timeouts and retries
@@ -202,9 +245,9 @@ environment values are written. Follow one question with e.g.
 |---|---|
 | Message types | System/Human messages come from the `ChatPromptTemplate`s in `prompts/system_prompt.py` (used by `_ask`, `plan_text`, the SQL writer); `AIMessage(tool_calls=...)` and `ToolMessage` are built in `execute` |
 | Prompt templates | `prompts/system_prompt.py` (business context, tool/KPI evidence, response format via structured output, limitations) |
-| Typed tools | `get_kpi` (typed `KpiName`, pydantic `KpiRequest`) and `query_kpi_table` (typed `question: str`, guarded SQL) |
+| Typed tools | `get_kpi` (typed `KpiName`, pydantic `KpiRequest`), `query_graph` (typed `TemplateName`, pydantic `GraphRequest`) and `query_kpi_table` (typed `question: str`, guarded SQL) |
 | Tools bound to the chat model | **Not used.** The planner chooses tools through the structured `Plan` and `execute` invokes them from the allowlist; `bind_tools` is never called. This differs from the spec wording, so decide whether to record it in an ADR |
-| Validate arguments before execution | `check_plan` and `KpiRequest` |
+| Validate arguments before execution | `check_plan`, `KpiRequest` and `GraphRequest` |
 | Structured output | `AssistantAnswer` via `with_structured_output(..., method="function_calling")` |
 | Tool errors / unavailable data | caught in `execute`, reported in `limitations`; `get_kpi` adds limitations for empty or undefined results |
 | Out-of-scope requests | judge returns `reject` → nothing is executed, reason returned in `limitations` |
@@ -218,6 +261,7 @@ environment values are written. Follow one question with e.g.
 | `tests/unit/test_detail_tools.py` | SQL guardrail (`check_sql`, `limit_rows`) and the atomic tools. `test_get_kpi_schema` currently fails: it still passes the old single-table schema shape to `make_kpi_tools` |
 | `tests/unit/test_assistant.py` | The API's assistant endpoints with a **fake** agent (no LLM), including `conversation_id` |
 | `tests/unit/test_memory.py` | Conversation memory: in-process and Redis backends (fake client), cap, truncation, Redis failures |
+| `tests/unit/test_graph_tools.py`, `tests/integration/test_graph_neo4j.py` | `query_graph`: templates, validation, Neo4j / memory backends and fallback, sync; see `tools/README.md` |
 | `tests/unit/test_prompts.py` | The planner and judge prompts contain today's date and the conversation history |
 | `tests/integration/test_assistant_live.py` | API → agent → Azure OpenAI → Gold: approval, plan revision, rejection, full LLM transcript with `-s` |
 
@@ -230,7 +274,7 @@ environment values are written. Follow one question with e.g.
 - Azure OpenAI settings in `core/config.py`
 - Persistent checkpointer: the API's two-step approval (`start_run` / `finish_run`) keeps pending plans in
   memory (`MemorySaver`), so it needs a single worker and a restart loses them
-- Knowledge Graph bonus tool
+- Knowledge graph: no periodic refresh (Neo4j is synced when the API starts, a Gold run while it stays up needs a restart or a manual sync) and only four templates (no asset similarity or multi-hop paths yet)
 
 ## Note on dependencies
 

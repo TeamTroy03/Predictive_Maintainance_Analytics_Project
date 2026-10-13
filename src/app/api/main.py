@@ -31,6 +31,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # noqa: ANN202 - runs once at startup
         app.state.db = GoldDB(settings)
+        from app.agent.tools.graph_sync import start_background_sync
+
+        start_background_sync()  # copy the Gold knowledge graph into Neo4j if NEO4J_URI is set (thread, never blocks)
         yield
 
     app = FastAPI(

@@ -71,6 +71,30 @@ uv run uvicorn app.api.main:app --reload   # run from the repo root; Swagger UI:
 ```
 3. Check `GET /ready` → `"gold": true`, then try the Postman collection (`postman/team3-pm-api.postman_collection.json`).
 4. For the website, add a user and start the frontend (see [Website login](#website-login) and `src/app/frontend/README.md`).
+5. Optional, for the assistant: Redis (conversation memory) and Neo4j (knowledge graph). Start them **before** the API:
+
+```bash
+# Redis: conversation memory (follow-up questions). Neo4j: store of the knowledge graph used by the assistant's query_graph tool.
+docker run -d --name pm-redis -p 6379:6379 redis:7-alpine
+docker run -d --name pm-neo4j -p 127.0.0.1:7687:7687 -e NEO4J_AUTH=neo4j/<password> neo4j:5
+# next days: docker start pm-redis pm-neo4j      stop: docker stop pm-redis pm-neo4j      remove: docker rm -f pm-redis pm-neo4j
+
+# wait until both answer (Neo4j needs 10-20 s after it starts), otherwise the startup graph sync below fails once
+docker exec pm-redis redis-cli ping                                          # PONG
+docker exec pm-neo4j cypher-shell -u neo4j -p <password> "RETURN 1"          # prints 1
+```
+
+Add to `.env` (both services are optional: without them the memory stays in the process and the graph is built in memory):
+
+```
+REDIS_URL=redis://localhost:6379/0
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=<the password of docker run>
+GRAPH_TABLE_PREFIX=test_            # prefix of the gold_kg_* tables if it differs from GOLD_TABLE_PREFIX
+```
+
+When the API starts and `NEO4J_URI` is set, it copies the Gold knowledge graph tables into Neo4j in a background thread (`graph_sync_started` / `graph_sync_finished` in the log). It never blocks or fails the start, it only loads when Gold has a newer load than the copy in Neo4j (`GRAPH_SYNC_ON_STARTUP=false` switches it off), and until it has finished the assistant answers graph questions from an in-memory graph. A Gold run while the API stays up is only picked up after a restart or a manual `uv run python -m app.agent.tools.graph_sync`.
 
 ## Configuration
 The API reads environment variables or the `.env` in the working directory (run uvicorn from the
@@ -89,6 +113,7 @@ serves both. There is no `PM_` prefix.
 | `COOKIE_SECURE` | `true` (default): the cookie is sent over HTTPS only. Set `false` only for a browser that refuses Secure cookies on localhost |
 | `ENVIRONMENT` | `dev` (default) or `prod`; `prod` refuses to start unless `COOKIE_SECURE` is true, `JWT_SECRET` is long enough and `AUTH_USERS` is set |
 | `QUERY_TIMEOUT_SECONDS`, `QUERY_RETRIES` | Databricks query limits (defaults 30 and 2) |
+| `REDIS_URL`, `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, `NEO4J_DATABASE`, `GRAPH_TABLE_PREFIX`, `GRAPH_SYNC_ON_STARTUP` | Optional services of the assistant, read from the environment or `.env` by the agent code, not by `Settings`. See `src/app/agent/README.md` |
 
 ## Website login
 The website signs in with email and password. There is no registration: users are added by hand.
@@ -123,6 +148,7 @@ Things to know:
   `OPENAI_API_VERSION`. It is imported on the first assistant call, so the API starts without them and the
   assistant answers 503 until they are set.
 - A pending plan lives in memory (`MemorySaver`): run **one uvicorn worker**; a restart loses pending plans.
+- The assistant has three tools: `get_kpi`, `query_kpi_table` and `query_graph` (relationship questions over the knowledge graph, Neo4j with an in-memory fallback). The result of a graph question says which backend answered.
 - **Client timeouts:** each question makes several sequential LLM calls (plan, review, summary, answer, and up
   to 2 plan revisions), each limited by `LLM_TIMEOUT_SECONDS` (60) with `LLM_MAX_RETRIES` (2) retries. Typical
   time is tens of seconds, the worst case is minutes. Use a client timeout of about 300 s for both assistant
