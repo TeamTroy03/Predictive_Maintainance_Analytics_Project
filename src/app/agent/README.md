@@ -258,7 +258,7 @@ environment values are written. Follow one question with e.g.
 | File | What it covers |
 |---|---|
 | `tools/.tests/test_kpi_tools.py` | `get_kpi` against the real Gold tables (marked `integration`) |
-| `tests/unit/test_detail_tools.py` | SQL guardrail (`check_sql`, `limit_rows`) and the atomic tools. `test_get_kpi_schema` currently fails: it still passes the old single-table schema shape to `make_kpi_tools` |
+| `tests/unit/test_detail_tools.py` | SQL guardrail (`check_sql`, `limit_rows`) and the atomic tools |
 | `tests/unit/test_assistant.py` | The API's assistant endpoints with a **fake** agent (no LLM), including `conversation_id` |
 | `tests/unit/test_memory.py` | Conversation memory: in-process and Redis backends (fake client), cap, truncation, Redis failures |
 | `tests/unit/test_graph_tools.py`, `tests/integration/test_graph_neo4j.py` | `query_graph`: templates, validation, Neo4j / memory backends and fallback, sync; see `tools/README.md` |

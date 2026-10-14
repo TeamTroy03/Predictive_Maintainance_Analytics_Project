@@ -14,7 +14,7 @@ The existing 90+ unit tests in `tests/unit` already run offline. This plan adds 
 ## 0. Small fixes so the suite is green in CI
 | # | Problem | Fix |
 |---|---|---|
-| P1 | `test_detail_tools.py::test_get_kpi_schema` is stale (`describe()` now takes `{table: schema}`) | Fix the fixture |
+| P1 | `test_detail_tools.py::test_get_kpi_schema` was stale (`describe()` takes `{table: schema}`) | Done: the fixture uses the new shape, the file passes |
 | P2 | 3 `test_auth.py` tests fail in a full run: `agent.py` calls `load_dotenv()` and leaks `.env` values (`COOKIE_SECURE=false`) into `os.environ` | Autouse fixture in `tests/unit/conftest.py` that clears `AUTH_USERS`, `JWT_SECRET`, `COOKIE_SECURE`, `API_KEYS`, `JWT_TENANT_ID`, `JWT_AUDIENCE`, `ENVIRONMENT`. CI has no `.env`, so this only matters locally. |
 | P3 | `src/app/agent/tools/.tests/test_kpi_tools.py` is outside `testpaths` and needs live services | Move it to `tests/integration/` (stays out of CI) |
 
