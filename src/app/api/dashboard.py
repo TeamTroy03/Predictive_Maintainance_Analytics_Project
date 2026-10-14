@@ -6,9 +6,9 @@ from collections.abc import Callable
 
 from pydantic import BaseModel
 
-from app.api.assets import STATUS_PARAMS, asset_cte
+from app.api.assets import asset_cte
 from app.api.db import GoldDB
-from app.api.kpis import Kpi
+from app.api.kpis import REPEAT_FAILURES_SQL, UNPLANNED_FAILURES_SQL, Kpi
 from app.api.schemas import (
     CostByType,
     FleetKpis,
@@ -17,6 +17,8 @@ from app.api.schemas import (
     MaintenanceKpis,
     MaintenanceSummary,
     MonthlyPoint,
+    RepeatFailureAsset,
+    RepeatFailureAssets,
     StatusCounts,
     TrendPoint,
 )
@@ -24,6 +26,8 @@ from app.api.shaping import kpi_rows, scale, utc
 from app.core.cache import TTLCache
 
 CACHE_SECONDS = 60  # Gold only changes when the pipeline loads it; this spares the warehouse repeat queries
+TOP_ASSETS = 10
+MIN_FAILURES = 3  # an asset needs this many unplanned failures to be ranked: a 1-of-1 asset is not "100% repeat"
 
 
 def cached[M: BaseModel](cache: TTLCache, key: str, model: type[M], build: Callable[[], M]) -> M:
@@ -43,8 +47,7 @@ def _period(month_rows: list[dict]) -> tuple[str | None, str | None]:
 def _status_counts(db: GoldDB) -> StatusCounts:
     """Same status definition as the Equipment list (assets.asset_cte), counted in SQL."""
     rows = db.query(
-        asset_cte(db) + " SELECT asset_status AS status, COUNT(*) AS n FROM assets GROUP BY asset_status",
-        STATUS_PARAMS,
+        asset_cte(db) + " SELECT asset_status AS status, COUNT(*) AS n FROM assets GROUP BY asset_status"
     )
     return StatusCounts(**{r["status"]: int(r["n"]) for r in rows})
 
@@ -81,6 +84,58 @@ def fleet_summary(db: GoldDB) -> FleetSummary:
             )
             for r in months.rows
         ],
+    )
+
+
+def repeat_failure_assets(db: GoldDB, limit: int = TOP_ASSETS) -> RepeatFailureAssets:
+    """Assets driving the Repeat-failure rate KPI, same pieces and same scope (kpi_equipment_month, whole period,
+    Unknown equipment out), summed per asset. Status comes from asset_cte, so offline assets are included.
+    LIMIT comes after the ORDER BY; the id tiebreak makes the order deterministic."""
+    sql = (
+        asset_cte(db)
+        + f""", failures AS (
+        SELECT k.equipment_key, {REPEAT_FAILURES_SQL} AS repeat_failures, {UNPLANNED_FAILURES_SQL} AS total_failures
+        FROM {db.table("kpi_equipment_month")} k
+        WHERE k.equipment_key <> -1
+        GROUP BY k.equipment_key
+    ), last_failure AS (
+        SELECT equipment_key, MAX(source_start_ts) AS last_failure
+        FROM {db.table("fact_downtime")}
+        WHERE downtime_type = 'unplanned'
+        GROUP BY equipment_key
+    )
+    SELECT a.equipment_id, a.equipment_name, a.production_line, a.asset_status,
+           f.repeat_failures, f.total_failures, l.last_failure
+    FROM failures f
+    JOIN assets a ON a.equipment_key = f.equipment_key
+    LEFT JOIN last_failure l ON l.equipment_key = f.equipment_key
+    WHERE f.repeat_failures > 0 AND f.total_failures >= {MIN_FAILURES}
+    ORDER BY f.repeat_failures DESC, f.total_failures DESC, a.equipment_id ASC
+    LIMIT {int(limit)}"""
+    )
+    rows = db.query(sql)
+    # The KPI's own numerator and denominator over all assets (not only the ranked ones), for the reconciliation
+    fleet = db.query(
+        f"""SELECT {REPEAT_FAILURES_SQL} AS repeat_failures, {UNPLANNED_FAILURES_SQL} AS total_failures
+        FROM {db.table("kpi_equipment_month")} k WHERE k.equipment_key <> -1"""
+    )[0]
+    return RepeatFailureAssets(
+        items=[
+            RepeatFailureAsset(
+                id=r["equipment_id"],
+                name=r["equipment_name"],
+                line=r["production_line"],
+                status=r["asset_status"],
+                repeat_failures=int(r["repeat_failures"]),
+                total_failures=int(r["total_failures"]),
+                repeat_rate_pct=round(int(r["repeat_failures"]) / int(r["total_failures"]) * 100, 1),
+                last_failure=utc(r["last_failure"]),
+            )
+            for r in rows
+        ],
+        min_failures=MIN_FAILURES,
+        fleet_repeat_failures=int(fleet["repeat_failures"] or 0),
+        fleet_total_failures=int(fleet["total_failures"] or 0),
     )
 
 

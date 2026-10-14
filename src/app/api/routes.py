@@ -14,7 +14,7 @@ from app.api.assets import (
     list_work_orders,
     sensor_series,
 )
-from app.api.dashboard import cached, fleet_summary, maintenance_summary
+from app.api.dashboard import cached, fleet_summary, maintenance_summary, repeat_failure_assets
 from app.api.db import GoldDB
 from app.api.errors import ERROR_RESPONSES, ApiError, ErrorResponse
 from app.api.kpis import KPI_DEFINITIONS
@@ -35,10 +35,11 @@ from app.api.schemas import (
     MaintenanceSummary,
     Priority,
     Readiness,
+    RepeatFailureAssets,
     SensorRange,
     SensorSeries,
     UserOut,
-    WorkOrderItem,
+    WorkOrderItemPage,
     WorkOrderPage,
     WorkOrderStatus,
 )
@@ -163,6 +164,18 @@ def get_fleet_summary(request: Request, db: GoldDB = Depends(get_db)) -> FleetSu
 
 
 @api.get(
+    "/fleet/repeat-failure-assets",
+    response_model=RepeatFailureAssets,
+    tags=["dashboard"],
+    summary="Top 10 assets by repeat failures (the numerator of the Repeat-failure rate KPI)",
+)
+def get_repeat_failure_assets(request: Request, db: GoldDB = Depends(get_db)) -> RepeatFailureAssets:
+    return cached(
+        request.app.state.dashboard_cache, "repeat-failure-assets", RepeatFailureAssets, lambda: repeat_failure_assets(db)
+    )
+
+
+@api.get(
     "/maintenance/summary",
     response_model=MaintenanceSummary,
     tags=["dashboard"],
@@ -237,17 +250,18 @@ def get_alarms(
 
 @api.get(
     "/maintenance/work-orders",
-    response_model=list[WorkOrderItem],
+    response_model=WorkOrderItemPage,
     tags=["maintenance"],
-    summary="Work orders: overdue first, then open, then the rest",
+    summary="Work orders: overdue first, then open, then the rest (paginated)",
 )
 def get_work_orders(
     status: WorkOrderStatus | None = None,
     asset_id: Annotated[str | None, Query(pattern=r"^[Ee][Qq]-\d{5}$")] = None,
-    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
     db: GoldDB = Depends(get_db),
-) -> list[WorkOrderItem]:
-    return list_work_orders(db, status, asset_id.upper() if asset_id else None, limit)
+) -> WorkOrderItemPage:
+    return list_work_orders(db, status, asset_id.upper() if asset_id else None, page, page_size)
 
 
 # ---------------------------------------------------------------- domain endpoints

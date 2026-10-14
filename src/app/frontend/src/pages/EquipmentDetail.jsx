@@ -24,7 +24,7 @@ export default function EquipmentDetail() {
 
   const asset = useApi(() => api.getAsset(assetId), [assetId])
   const series = useApi(() => api.getSensorSeries(assetId, range), [assetId, range])
-  const workOrders = useApi(() => api.getWorkOrders({ asset_id: assetId }), [assetId])
+  const workOrders = useApi(() => api.getWorkOrders({ asset_id: assetId, page_size: 100 }), [assetId])
   const alarms = useApi(() => api.getAlarms({ asset_id: assetId }), [assetId])
 
   if (asset.error) return <ErrorBox error={asset.error} onRetry={asset.reload} />
@@ -124,7 +124,7 @@ export default function EquipmentDetail() {
       <Card title="Maintenance history" className="mt-4">
         {workOrders.error && <ErrorBox error={workOrders.error} onRetry={workOrders.reload} />}
         {!workOrders.data && !workOrders.error && <Loading />}
-        {workOrders.data && <WorkOrderTable rows={workOrders.data} showAsset={false} />}
+        {workOrders.data && <WorkOrderTable rows={workOrders.data.items} showAsset={false} />}
       </Card>
     </div>
   )

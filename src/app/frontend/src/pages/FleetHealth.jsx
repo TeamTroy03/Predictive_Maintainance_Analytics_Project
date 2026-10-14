@@ -3,7 +3,7 @@ import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, ReferenceL
 import { api } from '../api/client.js'
 import { useApi } from '../hooks/useApi.js'
 import { Card, PageHeader, KpiCard, StatusBadge, Loading, ErrorBox, Table, STATUS_COLORS } from '../components/ui.jsx'
-import { fmtNumber, fmtEuro, fmtDateTimeUtc, timeAgo } from '../format.js'
+import { fmtNumber, fmtEuro, fmtDateUtc, fmtDateTimeUtc, timeAgo } from '../format.js'
 
 const STATUS_ORDER = ['operational', 'warning', 'critical', 'offline']
 const TARGET_AVAILABILITY = 95
@@ -49,8 +49,7 @@ const fmtRate = (v) => (v != null && v > 0 && v < 0.01 ? '<0.01' : fmtNumber(v, 
 export default function FleetHealth() {
   const navigate = useNavigate()
   const summary = useApi(() => api.getFleetSummary())
-  // Lowest availability first, offline assets last (offline assets have no meaningful availability)
-  const assets = useApi(() => api.getAssets({ sort: 'availability', page_size: 10 }))
+  const repeaters = useApi(() => api.getRepeatFailureAssets())
   const byType = useApi(() => api.queryKpis({ kpis: ['availability', 'unplanned_downtime_hours', 'unplanned_failures'], group_by: ['equipment_type'] }))
 
   if (summary.error) return <ErrorBox error={summary.error} onRetry={summary.reload} />
@@ -82,7 +81,7 @@ export default function FleetHealth() {
       </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
-        <Card title="Asset status">
+        <Card title="Asset status" subtitle="Critical / warning = active alarm, as in Critical Exceptions · offline = standby or no data">
           <StatusDistribution counts={status_counts} />
         </Card>
 
@@ -126,22 +125,24 @@ export default function FleetHealth() {
           )}
         </Card>
 
-        <Card title="Lowest-availability assets" subtitle="The 10 in-service assets with the lowest availability · offline assets are listed last · click a row for details" className="lg:col-span-2">
-          {assets.error ? (
-            <ErrorBox error={assets.error} />
-          ) : assets.loading && !assets.data ? (
+        <Card title="Top repeat-failure assets" subtitle={`The 10 assets with the most repeat failures · whole period (${period}) · click a row for details`} className="lg:col-span-2">
+          {repeaters.error ? (
+            <ErrorBox error={repeaters.error} onRetry={repeaters.reload} />
+          ) : repeaters.loading && !repeaters.data ? (
             <Loading />
           ) : (
             <Table
               onRowClick={(a) => navigate(`/equipment/${a.id}`)}
-              rows={assets.data?.items ?? []}
-              empty="No assets"
+              rows={repeaters.data?.items ?? []}
+              empty="No repeat failures in this period"
               columns={[
                 { key: 'id', label: 'Asset', render: (a) => <div><div className="font-semibold">{a.id}</div><div className="text-xs text-gray-500">{a.name}</div></div> },
                 { key: 'line', label: 'Line' },
                 { key: 'status', label: 'Status', render: (a) => <StatusBadge status={a.status} /> },
-                { key: 'availability_pct', label: 'Availability', align: 'right', render: (a) => (a.availability_pct == null ? <span className="text-gray-400">No data</span> : `${fmtNumber(a.availability_pct, 2)} %`) },
-                { key: 'last_alarm', label: 'Last alarm', render: (a) => (a.last_alarm ? `${timeAgo(a.last_alarm, as_of)} (${a.last_alarm_state})` : <span className="text-gray-400">No alarms</span>) },
+                { key: 'repeat_failures', label: 'Repeat failures', align: 'right', render: (a) => <span className="font-semibold">{fmtNumber(a.repeat_failures, 0)}</span> },
+                { key: 'total_failures', label: 'Total failures', align: 'right', render: (a) => fmtNumber(a.total_failures, 0) },
+                { key: 'repeat_rate_pct', label: 'Repeat rate', align: 'right', render: (a) => `${fmtNumber(a.repeat_rate_pct)} %` },
+                { key: 'last_failure', label: 'Last failure', render: (a) => <span title={timeAgo(a.last_failure, as_of)}>{fmtDateUtc(a.last_failure)}</span> },
               ]}
             />
           )}

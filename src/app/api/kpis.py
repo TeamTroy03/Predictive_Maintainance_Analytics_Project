@@ -22,6 +22,11 @@ class Kpi(StrEnum):
     work_orders = "work_orders"
 
 
+# Numerator and denominator of the repeat-failure rate, shared with the Fleet Health "Top repeat-failure assets"
+# panel (dashboard.repeat_failure_assets) so the panel's sum always reconciles with the KPI card.
+UNPLANNED_FAILURES_SQL = "SUM(k.unplanned_failure_count)"
+REPEAT_FAILURES_SQL = "SUM(k.repeat_failure_count)"
+
 # kpi -> (unit, SQL formula, description)
 KPI_DEFINITIONS: dict[Kpi, tuple[str, str, str]] = {
     Kpi.availability: (
@@ -30,7 +35,7 @@ KPI_DEFINITIONS: dict[Kpi, tuple[str, str, str]] = {
         "Share of calendar time the equipment was not down",
     ),
     Kpi.unplanned_downtime_hours: ("hours", "SUM(k.unplanned_downtime_hours)", "Unplanned downtime"),
-    Kpi.unplanned_failures: ("count", "SUM(k.unplanned_failure_count)", "Number of unplanned failures"),
+    Kpi.unplanned_failures: ("count", UNPLANNED_FAILURES_SQL, "Number of unplanned failures"),
     Kpi.mtbf_hours: (
         "hours",
         "SUM(k.operating_uptime_hours) / NULLIF(SUM(k.unplanned_failure_count), 0)",
@@ -64,7 +69,7 @@ KPI_DEFINITIONS: dict[Kpi, tuple[str, str, str]] = {
     Kpi.maintenance_cost_eur: ("EUR", "SUM(k.maintenance_cost_eur)", "Labour plus parts cost"),
     Kpi.repeat_failure_rate: (
         "ratio",
-        "SUM(k.repeat_failure_count) / NULLIF(SUM(k.unplanned_failure_count), 0)",
+        f"{REPEAT_FAILURES_SQL} / NULLIF({UNPLANNED_FAILURES_SQL}, 0)",
         "Failures repeating within 30 days",
     ),
     Kpi.work_orders: ("count", "SUM(k.work_order_count)", "Work orders created, excluding cancelled"),

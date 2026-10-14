@@ -69,7 +69,7 @@ class FakeDB:
         known = params.get("equipment_id") == "EQ-10002"
         if "asset_status AS status, COUNT(*)" in sql:
             return [{"status": "operational", "n": 5}, {"status": "critical", "n": 1}]
-        if "COUNT(*) OVER () AS total" in sql:
+        if "COUNT(*) OVER () AS total FROM assets" in sql:
             return [{**ASSET, "total": 1}]
         if "FROM assets WHERE equipment_id" in sql:
             return [ASSET] if known else []
@@ -94,7 +94,7 @@ class FakeDB:
             return [{"work_order_id": "WO-26001", "equipment_id": "EQ-10002", "priority": "P1", "wo_status": "overdue",
                      "maintenance_type": "Corrective", "failure_mode_code": "BRG", "failure_mode_desc": "Bearing wear",
                      "created_ts": TS, "due_ts": TS, "closed_ts": None, "downtime_hours": Decimal("3.5"),
-                     "maintenance_cost_eur": Decimal("420.00")}]
+                     "maintenance_cost_eur": Decimal("420.00"), "total": 45}]
         if "e.criticality, e.status" in sql:
             return [{"equipment_key": 1, "equipment_id": "EQ-10002", "equipment_name": "Air Compressor AC-A0001",
                      "criticality": "B", "status": "active", "site_code": "PLT-B", "site_name": "Rheinfeld Works",
@@ -355,13 +355,17 @@ def test_alarms_reject_bad_query_parameters(client, query):
 
 
 def test_work_orders_list(client):
-    response = client.get("/maintenance/work-orders?status=overdue&limit=20", headers=KEY)
+    response = client.get("/maintenance/work-orders?status=overdue&page=2&page_size=20", headers=KEY)
     assert response.status_code == 200
-    item = response.json()[0]
+    body = response.json()
+    assert (body["total"], body["page"], body["page_size"]) == (45, 2, 20)
+    item = body["items"][0]
     assert_keys(item, {"id", "asset_id", "type", "status", "priority", "title", "opened", "due", "completed",
                        "downtime_h", "cost"})
     assert (item["status"], item["title"], item["cost"]) == ("overdue", "Corrective – Bearing wear", 420.0)
     assert_error(client.get("/maintenance/work-orders?status=bogus", headers=KEY), 422, "validation_error")
+    assert_error(client.get("/maintenance/work-orders?page=0", headers=KEY), 422, "validation_error")
+    assert_error(client.get("/maintenance/work-orders?page_size=101", headers=KEY), 422, "validation_error")
 
 
 # ---------------------------------------------------------------- 17-18 domain endpoints

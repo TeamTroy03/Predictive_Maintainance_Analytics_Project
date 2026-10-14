@@ -137,11 +137,12 @@ export default function Alarms() {
   if (!alarms.data) return <Loading />
 
   const isActive = (a) => stateOf(a) === 'active'
-  const activeCount = alarms.data.filter(isActive).length
-  const historyCount = alarms.data.length - activeCount
-  const inTab = alarms.data.filter((a) => isActive(a) === (tab === 'active'))
-  const count = (s) => inTab.filter((a) => a.severity === s).length
-  const rows = inTab.filter((a) => !severity || a.severity === severity)
+  // Counts are assets (one row each), by their worst alarm: the same rule as the Asset status panel on Fleet Health
+  const activeGroups = groupByAsset(alarms.data.filter(isActive))
+  const historyGroups = groupByAsset(alarms.data.filter((a) => !isActive(a)))
+  const inTab = tab === 'active' ? activeGroups : historyGroups
+  const count = (s) => inTab.filter((g) => g.severity === s).length
+  const groups = inTab.filter((g) => !severity || g.severity === severity)
   const hasLimits = alarms.data.some((a) => a.threshold != null)
   const through = asOf ? ` · data through ${fmtDateTimeUtc(asOf)}` : ''
   const subtitle =
@@ -156,8 +157,8 @@ export default function Alarms() {
           value={tab}
           onChange={(t) => { setTab(t); setSeverity('') }}
           options={[
-            { value: 'active', label: `Active (${fmtNumber(activeCount, 0)})` },
-            { value: 'history', label: `History (${fmtNumber(historyCount, 0)})` },
+            { value: 'active', label: `Active (${fmtNumber(activeGroups.length, 0)})` },
+            { value: 'history', label: `History (${fmtNumber(historyGroups.length, 0)})` },
           ]}
         />
       </PageHeader>
@@ -175,7 +176,7 @@ export default function Alarms() {
         }
       >
         <GroupedAlarms
-          groups={groupByAsset(rows)}
+          groups={groups}
           asOf={asOf}
           empty={tab === 'active' ? `No active ${severity ? `${severity} ` : 'critical '}exceptions` : 'No alarm history'}
         />

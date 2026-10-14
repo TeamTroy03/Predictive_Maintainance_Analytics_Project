@@ -65,7 +65,7 @@ I will write each request as one row in a table in `tests/unit/test_api_contract
 | 13 | `GET /assets/EQ-10002`, `/assets/eq-10002` (case), `/assets/EQ-99999` (unknown), `/assets/abc` | 200 / 200 / 404 / 422 |
 | 14 | `GET /assets/EQ-10002/sensors?range=7d`, `?range=2y` | 200 / 422 |
 | 15 | `GET /alarms?asset_id=EQ-10002&limit=50` | 200 list |
-| 16 | `GET /maintenance/work-orders?status=overdue&limit=20` | 200 list |
+| 16 | `GET /maintenance/work-orders?status=overdue&page=1&page_size=20` | 200 `{items, total, page, page_size}` |
 | 17 | `GET /equipment/EQ-10002/health` and unknown id | 200 `{equipment, kpis, recent_alarms, open_work_orders}` / 404 |
 | 18 | `GET /work-orders/overdue?priority=P1&site_code=PLT-B&page=1` | 200 `{items, page, page_size, total, has_next}` |
 | 19 | `POST /assistant/query` `{"question":"What is the MTBF of EQ-10002?"}` (fake agent) | 200 with `run_id` and a plan waiting for approval |

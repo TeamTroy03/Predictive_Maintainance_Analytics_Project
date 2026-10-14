@@ -2,7 +2,8 @@
 export const fmtNumber = (v, digits = 1) => (v === null || v === undefined ? '–' : Number(v).toLocaleString('en-GB', { maximumFractionDigits: digits }))
 export const fmtEuro = (v) => (v === null || v === undefined ? '–' : `€${Number(v).toLocaleString('en-GB', { maximumFractionDigits: 0 })}`)
 export const fmtDate = (s) => (s ? new Date(s).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '–')
-export const fmtDateTime = (s) => (s ? new Date(s).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '–')
+export const fmtDateUtc = (s) => (s ? new Date(s).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' }) : '–')
+export const fmtDateTime =(s) => (s ? new Date(s).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '–')
 // The data is UTC and historical: show the zone, so "20:04" is not read as local time
 export const fmtDateTimeUtc = (s) =>
   s ? `${new Date(s).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC` : '–'

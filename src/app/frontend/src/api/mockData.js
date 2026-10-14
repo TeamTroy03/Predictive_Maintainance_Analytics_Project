@@ -217,12 +217,13 @@ export async function getMaintenanceSummary() {
   }
 }
 
-export async function getWorkOrders({ status, asset_id } = {}) {
+export async function getWorkOrders({ status, asset_id, page = 1, page_size = 20 } = {}) {
   await delay()
-  return WORK_ORDERS.filter((w) => (!status || w.status === status) && (!asset_id || w.asset_id === asset_id)).map((w) => ({
+  const all = WORK_ORDERS.filter((w) => (!status || w.status === status) && (!asset_id || w.asset_id === asset_id)).map((w) => ({
     ...w,
     asset_name: assetName(w.asset_id),
   }))
+  return { items: all.slice((page - 1) * page_size, page * page_size), total: all.length, page, page_size }
 }
 
 export async function getAlarms({ asset_id } = {}) {

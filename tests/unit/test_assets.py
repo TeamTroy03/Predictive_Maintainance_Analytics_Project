@@ -68,7 +68,14 @@ def test_asset_filters_are_bound_parameters():
     sql, params = db.calls[0]
     assert params["status"] == "critical" and params["q"] == "%pump%%"  # lower-cased, never in the SQL text
     assert "pump" not in sql.lower() and "fact_sensor_reading" in sql
-    assert params["operational"] == assets.OPERATIONAL_FROM and params["warning"] == assets.WARNING_FROM
+
+
+def test_asset_status_uses_the_same_active_alarm_sql_as_the_alarm_list():
+    db = FakeDB([])
+    assets.list_alarms(db)
+    alarm_sql, status_sql = " ".join(db.calls[0][0].split()), " ".join(assets.asset_cte(db).split())
+    assert " ".join(assets._alarm_readings(db).split()) in alarm_sql and " ".join(assets._alarm_readings(db).split()) in status_sql
+    assert "x.critical = 1 THEN 'critical'" in status_sql and "availability >= :" not in status_sql
 
 
 def test_asset_detail_has_converted_kpis_and_latest_readings():
@@ -143,18 +150,25 @@ def wo(**over):
     return {"work_order_id": "WO-1", "equipment_id": "EQ-10002", "priority": "P2", "wo_status": "overdue",
             "maintenance_type": "Corrective", "failure_mode_code": "BRG-WEAR", "failure_mode_desc": "Bearing wear",
             "created_ts": TS, "due_ts": TS, "closed_ts": None, "downtime_hours": Decimal("5.25"),
-            "maintenance_cost_eur": Decimal("1200.50"), **over}
+            "maintenance_cost_eur": Decimal("1200.50"), "total": 45, **over}
 
 
 def test_work_orders_get_a_built_title_and_numbers():
     db = FakeDB([("fact_maintenance_work_order", [wo(), wo(work_order_id="WO-2", failure_mode_code="NONE",
                  failure_mode_desc="No failure", maintenance_type="Preventive", downtime_hours=None, wo_status="completed")])])
-    corrective, preventive = assets.list_work_orders(db, status="overdue", equipment_id="EQ-10002", limit=20)
+    result = assets.list_work_orders(db, status="overdue", equipment_id="EQ-10002", page=3, page_size=20)
+    corrective, preventive = result.items
+    assert (result.total, result.page, result.page_size) == (45, 3, 20)
     assert corrective.title == "Corrective – Bearing wear" and corrective.status == "overdue"
     assert (corrective.downtime_h, corrective.cost) == (5.25, 1200.5)
     assert preventive.title == "Preventive maintenance" and preventive.downtime_h is None
     params = db.calls[0][1]
-    assert params == {"status": "overdue", "equipment_id": "EQ-10002"} and "LIMIT 20" in db.calls[0][0]
+    assert params == {"status": "overdue", "equipment_id": "EQ-10002"} and "LIMIT 20 OFFSET 40" in db.calls[0][0]
+
+
+def test_work_orders_past_the_last_page_are_empty_with_total_zero():
+    result = assets.list_work_orders(FakeDB([]), page=99)
+    assert result.items == [] and result.total == 0
 
 
 # ---------------------------------------------------------------- HTTP

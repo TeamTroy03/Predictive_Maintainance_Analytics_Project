@@ -84,10 +84,13 @@ export const api = {
   // 1. Fleet health
   getFleetSummary: () => (USE_MOCK ? mock.getFleetSummary() : get('/api/fleet/summary')),
 
+  // Top assets by repeat failures -> { items, min_failures, fleet_repeat_failures, fleet_total_failures } (no demo data)
+  getRepeatFailureAssets: () => (USE_MOCK ? Promise.resolve({ items: [], min_failures: 3 }) : get('/api/fleet/repeat-failure-assets')),
+
   // Governed KPIs grouped, e.g. { kpis: ['availability'], group_by: ['equipment_type'] } -> { rows, ... } (no demo data)
   queryKpis: (body) => (USE_MOCK ? Promise.resolve({ rows: [] }) : post('/api/analytics/query', body)),
 
-  // 4. Equipment: { items, total, page, page_size }; filters: status, q, line, sort, has_sensors, page, page_size
+  // 4. Equipment: { items, total, page, page_size }; filters: status, q, has_sensors, page, page_size (other params are ignored by the API: it has no sort)
   getAssets: (filters = {}) => (USE_MOCK ? mock.getAssets(filters) : get(`/api/assets${query(filters)}`)),
   getAsset: (assetId) => (USE_MOCK ? mock.getAsset(assetId) : get(`/api/assets/${assetId}`)),
 

@@ -119,6 +119,44 @@ export function Segmented({ options, value, onChange }) {
   )
 }
 
+// Page numbers with the first, the last and the neighbours of the current page: 1 … 4 5 [6] 7 8 … 20
+function pageNumbers(page, pages) {
+  const shown = [...new Set([1, page - 2, page - 1, page, page + 1, page + 2, pages])].filter((p) => p >= 1 && p <= pages).sort((a, b) => a - b)
+  return shown.flatMap((p, i) => (i > 0 && p - shown[i - 1] > 1 ? ['…', p] : [p]))
+}
+
+export function Pagination({ page, pageSize, total, onChange }) {
+  const pages = Math.max(1, Math.ceil(total / pageSize))
+  if (pages === 1) return null
+  const from = (page - 1) * pageSize + 1
+  const to = Math.min(page * pageSize, total)
+  const btn = 'min-w-8 rounded border px-2 py-1 text-xs font-medium'
+  return (
+    <nav aria-label="Pagination" className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
+      <p className="num text-xs text-gray-600">{from.toLocaleString('en-GB')}–{to.toLocaleString('en-GB')} of {total.toLocaleString('en-GB')}</p>
+      <div className="flex items-center gap-1">
+        <button onClick={() => onChange(page - 1)} disabled={page === 1} className={`${btn} border-line hover:bg-gray-100 disabled:opacity-40`}>Previous</button>
+        {pageNumbers(page, pages).map((p, i) =>
+          p === '…' ? (
+            <span key={`gap${i}`} aria-hidden className="px-1 text-xs text-gray-500">…</span>
+          ) : (
+            <button
+              key={p}
+              onClick={() => onChange(p)}
+              aria-current={p === page ? 'page' : undefined}
+              aria-label={`Page ${p}`}
+              className={`${btn} num ${p === page ? 'border-ink bg-ink text-white' : 'border-line hover:bg-gray-100'}`}
+            >
+              {p}
+            </button>
+          ),
+        )}
+        <button onClick={() => onChange(page + 1)} disabled={page === pages} className={`${btn} border-line hover:bg-gray-100 disabled:opacity-40`}>Next</button>
+      </div>
+    </nav>
+  )
+}
+
 export function Table({ columns, rows, empty = 'No data', onRowClick }) {
   return (
     <div className="overflow-x-auto">
@@ -126,7 +164,7 @@ export function Table({ columns, rows, empty = 'No data', onRowClick }) {
         <thead>
           <tr className="border-b border-line bg-gray-50 text-left text-xs text-gray-600">
             {columns.map((c) => (
-              <th key={c.key} className={`whitespace-nowrap px-3 py-2 font-display text-sm font-semibold ${c.align === 'right' ? 'text-right' : ''}`}>
+              <th key={c.key} scope="col" className={`whitespace-nowrap px-3 py-2 font-display text-sm font-semibold ${c.align === 'right' ? 'text-right' : ''}`}>
                 {c.label}
               </th>
             ))}

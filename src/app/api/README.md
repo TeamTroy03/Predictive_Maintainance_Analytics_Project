@@ -51,7 +51,7 @@ Auth: ✔ = needs a valid session cookie, an `X-API-Key` (dev) or an Entra ID be
 | GET | `/assets/{equipment_id}` | ✔ | One asset: status, KPIs, latest sensor readings |
 | GET | `/assets/{equipment_id}/sensors` | ✔ | Sensor series of one asset (`range` 1h, 24h (default), 7d, 30d or all, counted back from its last reading) |
 | GET | `/alarms` | ✔ | Alarm readings, newest first (`asset_id`, `limit` up to 500) |
-| GET | `/maintenance/work-orders` | ✔ | Work orders: overdue first, then open, then the rest (`status`, `asset_id`, `limit` up to 500) |
+| GET | `/maintenance/work-orders` | ✔ | Work orders: overdue first, then open, then the rest (`status`, `asset_id`, `page`, `page_size` up to 100; returns `{items, total, page, page_size}`) |
 | GET | `/equipment/{equipment_id}/health` | ✔ | One asset's KPIs, latest alarms, open work orders |
 | GET | `/work-orders/overdue` | ✔ | Overdue work orders, paginated |
 | POST | `/assistant/query` | ✔ | Step 1: question in natural language (optional `conversation_id` for follow-up memory); returns the agent's plan awaiting approval |

@@ -2,7 +2,8 @@
 
 Gold has no health score, remaining useful life, sensor limits, acknowledgements, technician or work-order
 title: those fields are left out (or built from Gold fields, say so in the field) and never invented.
-Asset status is one SQL definition (asset_cte) used by the Equipment list and the Fleet Health counts.
+Asset status is one SQL definition (asset_cte) used by the Equipment list and the Fleet Health counts; it is built
+from the same active-alarm definition (_alarm_readings) as the Critical Exceptions list.
 """
 
 from app.api.db import GoldDB
@@ -21,23 +22,37 @@ from app.api.schemas import (
     SensorRange,
     SensorSeries,
     WorkOrderItem,
+    WorkOrderItemPage,
     WorkOrderStatus,
 )
 from app.api.shaping import kpi_rows, scale, utc
 
-# Status from availability over the period (thresholds = the report targets). Gold has no warning/critical
-# concept of its own, so this rule is the definition. Decommissioned and standby assets are offline.
-OPERATIONAL_FROM = 0.95
-WARNING_FROM = 0.90
+# Status: critical / warning = the asset has an active critical / warning alarm (same rule as the Alarms list),
+# otherwise operational. Decommissioned and standby assets, and assets without data, are offline.
 OFFLINE_STATUSES = ("standby", "decommissioned")
-STATUS_PARAMS = {"operational": OPERATIONAL_FROM, "warning": WARNING_FROM}
 
 _STATUS_ORDER = "CASE asset_status WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 WHEN 'offline' THEN 3 ELSE 2 END"
 _ASSET_ID = "equipment_id = :equipment_id"
 
 
+def _alarm_readings(db: GoldDB, extra_where: str = "") -> str:
+    """SQL subquery of alarm readings with `is_cleared`: an alarm is cleared once its sensor has a later normal
+    reading. The one definition of "active" for the Alarms list and the asset status."""
+    fact = db.table("fact_sensor_reading")
+    return f"""(
+        SELECT a.*, COALESCE(n.last_normal > a.event_ts, FALSE) AS is_cleared
+        FROM (SELECT * FROM {fact} WHERE is_alarm = TRUE AND equipment_key <> -1{extra_where}) a
+        LEFT JOIN (
+            SELECT sensor_id, MAX(event_ts) AS last_normal
+            FROM {fact}
+            WHERE alarm_state = 'normal'
+            GROUP BY sensor_id
+        ) n ON n.sensor_id = a.sensor_id
+    )"""
+
+
 def asset_cte(db: GoldDB) -> str:
-    """SQL prefix defining `assets`: one row per real equipment with its status. Needs STATUS_PARAMS."""
+    """SQL prefix defining `assets`: one row per real equipment with its status."""
     offline = ", ".join(f"'{s}'" for s in OFFLINE_STATUSES)
     return f"""
     WITH availability AS (
@@ -45,6 +60,11 @@ def asset_cte(db: GoldDB) -> str:
         FROM {db.table("kpi_equipment_month")} k
         WHERE k.equipment_key <> -1
         GROUP BY k.equipment_key
+    ), active AS (
+        SELECT equipment_key, MAX(CASE WHEN alarm_state = 'alarm' THEN 1 ELSE 0 END) AS critical
+        FROM {_alarm_readings(db)}
+        WHERE NOT is_cleared
+        GROUP BY equipment_key
     ), last_maintenance AS (
         SELECT w.equipment_key, MAX(w.closed_ts) AS last_maintenance
         FROM {db.table("fact_maintenance_work_order")} w
@@ -55,11 +75,12 @@ def asset_cte(db: GoldDB) -> str:
                e.install_date, s.site_name, t.equipment_type, a.availability, COALESCE(a.alarms, 0) AS alarms,
                m.last_maintenance,
                CASE WHEN LOWER(e.status) IN ({offline}) OR a.availability IS NULL THEN 'offline'
-                    WHEN a.availability >= :operational THEN 'operational'
-                    WHEN a.availability >= :warning THEN 'warning'
-                    ELSE 'critical' END AS asset_status
+                    WHEN x.critical = 1 THEN 'critical'
+                    WHEN x.equipment_key IS NOT NULL THEN 'warning'
+                    ELSE 'operational' END AS asset_status
         FROM {db.table("dim_equipment")} e
         LEFT JOIN availability a ON a.equipment_key = e.equipment_key
+        LEFT JOIN active x ON x.equipment_key = e.equipment_key
         LEFT JOIN last_maintenance m ON m.equipment_key = e.equipment_key
         LEFT JOIN {db.table("dim_site")} s ON e.site_key = s.site_key
         LEFT JOIN {db.table("dim_equipment_type")} t ON e.equipment_type_key = t.equipment_type_key
@@ -93,7 +114,7 @@ def list_assets(
     page_size: int = 50,
 ) -> AssetPage:
     """Most urgent first (critical, warning, operational, offline), then by id."""
-    where, params = [], dict(STATUS_PARAMS)
+    where, params = [], {}
     if status:
         where.append("asset_status = :status")
         params["status"] = status
@@ -126,7 +147,7 @@ _READING_STATUS: dict[str, AssetStatus] = {"normal": "operational", "warning": "
 def asset_detail(db: GoldDB, equipment_id: str) -> AssetDetail:
     found = db.query(
         asset_cte(db) + f" SELECT * FROM assets WHERE {_ASSET_ID}",
-        {**STATUS_PARAMS, "equipment_id": equipment_id},
+        {"equipment_id": equipment_id},
     )
     if not found:
         raise ApiError(404, "not_found", f"Equipment {equipment_id} not found")
@@ -217,22 +238,13 @@ _ALARM_NAMES = {
 def list_alarms(db: GoldDB, equipment_id: str | None = None, limit: int = 200) -> list[Alarm]:
     """Alarm readings, newest first. Gold keeps no acknowledgements, so the state is derived: an alarm is cleared
     once its sensor has a later normal reading, active until then."""
-    where, params = ["is_alarm = TRUE", "equipment_key <> -1"], {}
-    if equipment_id:
-        where.append(_ASSET_ID)
-        params["equipment_id"] = equipment_id
+    params = {"equipment_id": equipment_id} if equipment_id else {}
     rows = db.query(
         f"""
-        SELECT a.event_ts, a.equipment_id, a.sensor_id, a.sensor_type, a.reading_value, a.canonical_unit,
-               a.alarm_state, a.alarm_code, COALESCE(n.last_normal > a.event_ts, FALSE) AS is_cleared
-        FROM (SELECT * FROM {db.table("fact_sensor_reading")} WHERE {" AND ".join(where)}) a
-        LEFT JOIN (
-            SELECT sensor_id, MAX(event_ts) AS last_normal
-            FROM {db.table("fact_sensor_reading")}
-            WHERE alarm_state = 'normal'
-            GROUP BY sensor_id
-        ) n ON n.sensor_id = a.sensor_id
-        ORDER BY a.event_ts DESC
+        SELECT event_ts, equipment_id, sensor_id, sensor_type, reading_value, canonical_unit, alarm_state, alarm_code,
+               is_cleared
+        FROM {_alarm_readings(db, f" AND {_ASSET_ID}" if equipment_id else "")}
+        ORDER BY event_ts DESC
         LIMIT {limit}
         """,
         params,
@@ -261,10 +273,14 @@ def list_alarms(db: GoldDB, equipment_id: str | None = None, limit: int = 200) -
 
 # ---------------------------------------------------------------- work orders
 def list_work_orders(
-    db: GoldDB, status: WorkOrderStatus | None = None, equipment_id: str | None = None, limit: int = 100
-) -> list[WorkOrderItem]:
-    """Overdue first, then open, then the rest, newest first. Status: completed = Closed, overdue = past due and
-    still open, open = Open or In Progress."""
+    db: GoldDB,
+    status: WorkOrderStatus | None = None,
+    equipment_id: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> WorkOrderItemPage:
+    """Overdue first, then open, then the rest, newest first (work order id breaks ties, so pages never overlap).
+    Status: completed = Closed, overdue = past due and still open, open = Open or In Progress."""
     where, params = ["w.equipment_key <> -1"], {}
     if equipment_id:
         where.append("w.equipment_id = :equipment_id")
@@ -273,7 +289,7 @@ def list_work_orders(
         params["status"] = status
     rows = db.query(
         f"""
-        SELECT * FROM (
+        SELECT *, COUNT(*) OVER () AS total FROM (
             SELECT w.work_order_id, w.equipment_id, w.priority,
                    CASE WHEN w.status = 'Closed' THEN 'completed' WHEN w.status = 'Cancelled' THEN 'cancelled'
                         WHEN w.is_overdue THEN 'overdue' ELSE 'open' END AS wo_status,
@@ -286,12 +302,12 @@ def list_work_orders(
             WHERE {" AND ".join(where)}
         ) x
         {"WHERE wo_status = :status" if status else ""}
-        ORDER BY CASE wo_status WHEN 'overdue' THEN 0 WHEN 'open' THEN 1 ELSE 2 END, created_ts DESC
-        LIMIT {limit}
+        ORDER BY CASE wo_status WHEN 'overdue' THEN 0 WHEN 'open' THEN 1 ELSE 2 END, created_ts DESC, work_order_id
+        LIMIT {page_size} OFFSET {(page - 1) * page_size}
         """,
         params,
     )
-    return [
+    items = [
         WorkOrderItem(
             id=r["work_order_id"],
             asset_id=r["equipment_id"],
@@ -307,6 +323,9 @@ def list_work_orders(
         )
         for r in rows
     ]
+    return WorkOrderItemPage(
+        items=items, total=int(rows[0]["total"]) if rows else 0, page=page, page_size=page_size
+    )
 
 
 def _title(r: dict) -> str:

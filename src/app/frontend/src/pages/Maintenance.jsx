@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { ResponsiveContainer, ComposedChart, Line, Bar, BarChart, XAxis, YAxis, Tooltip, Legend, CartesianGrid, Cell, LabelList } from 'recharts'
 import { api } from '../api/client.js'
 import { useApi } from '../hooks/useApi.js'
-import { Card, PageHeader, KpiCard, StatusBadge, Loading, ErrorBox, Table, Segmented } from '../components/ui.jsx'
+import { Card, PageHeader, KpiCard, StatusBadge, Loading, ErrorBox, Table, Segmented, Pagination } from '../components/ui.jsx'
 import { fmtNumber, fmtEuro, fmtDate } from '../format.js'
 
 const STATUS_FILTERS = [
@@ -12,6 +12,7 @@ const STATUS_FILTERS = [
   { value: 'overdue', label: 'Overdue' },
   { value: 'completed', label: 'Completed' },
 ]
+const PAGE_SIZE = 20
 const TYPE_COLORS = { Preventive: '#7e00c9', Predictive: '#a45ad9', Corrective: '#d1273f' }
 const AXIS_TICK = { fontSize: 11, fill: '#4b5563' }
 // Display only: thousands separators, at most 2 decimals ("150,000 h", "6.5 h"); the data is not rounded
@@ -20,8 +21,13 @@ const fmtEuroM = (v) => `€${(v / 1e6).toLocaleString('en-GB', { minimumFractio
 
 export default function Maintenance() {
   const [status, setStatus] = useState('')
+  const [page, setPage] = useState(1)
   const summary = useApi(() => api.getMaintenanceSummary())
-  const workOrders = useApi(() => api.getWorkOrders({ status }), [status])
+  const workOrders = useApi(() => api.getWorkOrders({ status, page, page_size: PAGE_SIZE }), [status, page])
+  const changeStatus = (s) => {
+    setStatus(s)
+    setPage(1) // a new filter starts on its first page
+  }
 
   if (summary.error) return <ErrorBox error={summary.error} onRetry={summary.reload} />
   if (!summary.data) return <Loading />
@@ -77,10 +83,15 @@ export default function Maintenance() {
         </Card>
       </div>
 
-      <Card title="Work orders" className="mt-4" action={<Segmented options={STATUS_FILTERS} value={status} onChange={setStatus} />}>
+      <Card title="Work orders" className="mt-4" action={<Segmented options={STATUS_FILTERS} value={status} onChange={changeStatus} />}>
         {workOrders.error && <ErrorBox error={workOrders.error} onRetry={workOrders.reload} />}
         {!workOrders.data && !workOrders.error && <Loading />}
-        {workOrders.data && <WorkOrderTable rows={workOrders.data} />}
+        {workOrders.data && (
+          <div className={workOrders.loading ? 'opacity-60' : ''} aria-busy={workOrders.loading}>
+            <WorkOrderTable rows={workOrders.data.items} />
+            <Pagination page={page} pageSize={PAGE_SIZE} total={workOrders.data.total} onChange={setPage} />
+          </div>
+        )}
       </Card>
     </div>
   )

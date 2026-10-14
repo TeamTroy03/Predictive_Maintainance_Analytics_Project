@@ -104,13 +104,8 @@ export function AgentProvider({ children }) {
   )
 }
 
-const SUGGESTIONS = {
-  fleet: ['Which assets need attention today?', 'Summarise fleet health for the shift handover'],
-  alarms: ['Which alarm should I handle first?', 'Are any of these alarms related?'],
-  equipment: ['Why is this asset in this state?', 'What maintenance do you recommend?'],
-  sensors: ['Explain the anomalies in this time window', 'Which sensor changed first?'],
-  maintenance: ['Why are work orders overdue?', 'How can we reduce MTTR?'],
-}
+// One example that exercises all three tools (get_kpi, query_kpi_table, query_graph)
+const SUGGESTION = 'For EQ-10001, what were its availability and MTTR over the last 3 months, which sites have the highest unplanned downtime in that period, and which failure modes keep recurring on it?'
 
 export default function AgentPanel() {
   const { open, setOpen, messages, setMessages, busy, awaitingApproval, ask, decide, context } = useAgent()
@@ -164,11 +159,9 @@ export default function AgentPanel() {
         {messages.length === 0 && (
           <div className="space-y-2">
             <p className="text-sm text-gray-500">Ask about anomalies, failures or maintenance. For example:</p>
-            {(SUGGESTIONS[context.page] ?? SUGGESTIONS.fleet).map((s) => (
-              <button key={s} onClick={() => ask(s)} className="block w-full rounded-md border border-line px-3 py-2 text-left text-sm hover:border-brand hover:bg-brand-light/40">
-                {s}
-              </button>
-            ))}
+            <button onClick={() => ask(SUGGESTION)} className="block w-full rounded-md border border-line px-3 py-2 text-left text-sm hover:border-brand hover:bg-brand-light/40">
+              {SUGGESTION}
+            </button>
           </div>
         )}
         {messages.map((m, i) => (
@@ -179,7 +172,7 @@ export default function AgentPanel() {
               <div
                 className={`max-w-[90%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm leading-relaxed ${
                   m.role === 'user'
-                    ? 'bg-ink text-white'
+                    ? 'border border-black bg-white text-black'
                     : m.error
                       ? 'border-l-4 border-crit bg-crit/10 text-crit'
                       : 'border-l-4 border-brand bg-gray-100 text-gray-800'

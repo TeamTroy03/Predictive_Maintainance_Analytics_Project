@@ -139,8 +139,26 @@ class FleetSummary(BaseModel):
     period_from: str | None = Field(description="First month in Gold, yyyy-MM; KPIs cover the whole period")
     period_to: str | None
     kpis: FleetKpis
-    status_counts: StatusCounts = Field(description="Assets by availability over the period; offline = standby or decommissioned")
+    status_counts: StatusCounts = Field(description="Assets by active alarm (critical/warning, as in Critical Exceptions); offline = standby, decommissioned or no data")
     availability_trend: list[TrendPoint]
+
+
+class RepeatFailureAsset(BaseModel):
+    id: str
+    name: str | None
+    line: str | None
+    status: AssetStatus
+    repeat_failures: int
+    total_failures: int = Field(description="Unplanned failures of the asset: the KPI's denominator")
+    repeat_rate_pct: float
+    last_failure: datetime | None = Field(description="Start of the asset's latest unplanned downtime interval")
+
+
+class RepeatFailureAssets(BaseModel):
+    items: list[RepeatFailureAsset]
+    min_failures: int = Field(description="Assets with fewer unplanned failures are not ranked")
+    fleet_repeat_failures: int = Field(description="Sum over ALL assets = numerator of the Repeat-failure rate KPI")
+    fleet_total_failures: int = Field(description="Sum over ALL assets = denominator of the Repeat-failure rate KPI")
 
 
 class MaintenanceKpis(BaseModel):
@@ -186,7 +204,7 @@ class AssetRow(BaseModel):
     type: str | None
     line: str | None
     site: str | None
-    status: AssetStatus = Field(description="From availability over the period; decommissioned/standby = offline")
+    status: AssetStatus = Field(description="critical/warning = has an active critical/warning alarm (as in Critical Exceptions); decommissioned/standby = offline")
     availability_pct: float | None
     manufacturer: str | None
     criticality: str | None
@@ -272,6 +290,13 @@ class WorkOrderItem(BaseModel):
     completed: datetime | None
     downtime_h: float | None
     cost: float | None
+
+
+class WorkOrderItemPage(BaseModel):
+    items: list[WorkOrderItem]
+    total: int = Field(description="Work orders matching the filter, over all pages")
+    page: int
+    page_size: int
 
 
 # ---------------------------------------------------------------- operations / assistant
