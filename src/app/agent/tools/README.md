@@ -8,7 +8,7 @@ in the `TOOLS` allowlist in [`../agent.py`](../README.md).
 |---|---|---|
 | `kpi_tools.py` | `get_kpi` | Implemented, queries Gold on Databricks (tested live, see Tests) |
 | `graph_tools.py`, `graph_sync.py` | `query_graph` (wired into `agent.py`); `graph_sync` is the CLI that loads the graph into Neo4j | Implemented; knowledge graph over Gold, Neo4j with in-memory fallback (see below) |
-| `detail_tools.py` | `query_kpi_table` (wired into `agent.py`); `get_kpi_schema`, `validate_and_format_kpi_query` (atomic variant, **not** wired) | Implemented; queries Gold on Databricks. Guardrail unit-tested (one test is stale, see below) |
+| `detail_tools.py` | `query_kpi_table` (wired into `agent.py`); `get_kpi_schema`, `validate_and_format_kpi_query` (atomic variant, **not** wired) | Implemented; queries Gold on Databricks. Guardrail unit-tested |
 
 ## `kpi_tools.py`: `get_kpi`
 
@@ -175,9 +175,7 @@ are `get_kpi` and `query_kpi_table`.
 ### Tests
 
 `tests/unit/test_detail_tools.py` covers `check_sql` (rejected writes, accepted SELECT), `limit_rows` and the
-atomic tools, with no Databricks and no LLM. **`test_get_kpi_schema` currently fails**: it passes the old
-single-table shape (`{"columns": [...], "sample": [...]}`) while `get_schema()` now returns
-`{table name: {"columns", "sample"}}`. Not covered yet: `query_with_retries` with a fake `write_sql`/`run_sql`,
+atomic tools, with no Databricks and no LLM. Not covered yet: `query_with_retries` with a fake `write_sql`/`run_sql`,
 the table allowlist in `check_sql`, and `run_detail_sql`'s table renaming. The live path is exercised by
 `tests/integration/test_assistant_live.py` only when the planner picks this tool.
 

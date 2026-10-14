@@ -26,7 +26,7 @@ uv run pytest tests/unit/test_graph_tools.py              # graph tool tests (no
 docker build -t pm-api .                # image built as the CI artifact
 ```
 
-Markers `integration` and `data_quality` are registered in `pyproject.toml`. There is no ruff configuration in the repo and the existing code has many findings, so lint only the files you touch. Known test failures that predate recent work: `tests/unit/test_detail_tools.py::test_get_kpi_schema`, and three tests in `tests/unit/test_auth.py` that fail in a full run but pass alone.
+Markers `integration` and `data_quality` are registered in `pyproject.toml`. There is no ruff configuration in the repo and the existing code has many findings, so lint only the files you touch. Known test failures that predate recent work: three tests in `tests/unit/test_auth.py` that fail in a full run but pass alone.
 
 Data tooling (see `src/data/README.md` and `src/data/generate/README.md`):
 
