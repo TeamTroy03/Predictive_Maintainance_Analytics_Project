@@ -195,7 +195,7 @@ gold_kg_* --(load_tables)--> in-process NetworkX graph                  \--> Mem
 
 | `template` | Needs | Returns (rows) |
 |---|---|---|
-| `equipment_failure_modes` | `equipment_id` | per failure mode: `failures`, `downtime_hours`, `repeat_failures`, `last_failure_ts` |
+| `equipment_failure_modes` | optional `equipment_id` (none = whole fleet, most failures first) | per failure mode: `equipment_id`, `failures`, `downtime_hours`, `repeat_failures`, `last_failure_ts` |
 | `type_failure_profile` | `equipment_type` | per failure mode: `failures`, `equipment_affected`, `downtime_hours` |
 | `repeat_failure_chain` | optional `equipment_id` (none = whole fleet) | each repeat failure, newest first: `work_order`, `equipment_id`, `repeats_work_order`, `failure_mode`, `gap_days`, `created_ts` |
 | `failures_after` | `failure_mode`, optional `equipment_type` | per next failure mode: `occurrences`, `avg_gap_days` |

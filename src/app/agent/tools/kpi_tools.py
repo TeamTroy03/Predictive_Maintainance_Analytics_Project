@@ -3,12 +3,19 @@ The LLM only picks a KPI and filters; the value is calculated in Databricks: the
 `gold_kpi_equipment_month` are summed over the selected rows, then the formula (same as KPI_FORMULAS in the Gold
 notebook) is applied. Formulas come only from KPIS below and user values are only bound parameters."""
 
+import logging
 import os
 import re
+import time
 from typing import Literal
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+logger = logging.getLogger("app.agent")  # same log file as agent.py (configured there)
+
+DATA_DATE_CACHE_SECONDS = int(os.getenv("DATA_DATE_CACHE_SECONDS", "600"))  # how long the last data date is reused
+DATA_DATE_RETRY_SECONDS = 60  # after a failed or empty lookup, wait this long before asking Databricks again
 
 _AS_OF = "Overdue is a snapshot at as_of_ts, bucketed by the month the work order was due."
 _ALARM = "Counts alarm READINGS (not distinct events), so it grows with the number of sensors per asset."
@@ -103,6 +110,30 @@ def run_query(sql: str, params: dict) -> dict:
     ) as conn, conn.cursor() as cursor:
         cursor.execute(sql, params)
         return cursor.fetchone().asDict()
+
+
+_data_end = {"info": None, "valid_until": 0.0}  # cache of data_available_until(): the answer and when to ask again
+
+
+def data_available_until(run=run_query) -> dict | None:
+    """Last date the Gold data covers, from Databricks: {"as_of": "YYYY-MM-DD", "last_month": "YYYY-MM"}, or None when it
+    cannot be read. `as_of_ts` is the Gold run's AS_OF (latest timestamp in Silver sensor events and work orders) and the
+    KPI months run up to it. Cached for DATA_DATE_CACHE_SECONDS; never raises, so a Databricks outage cannot stop the
+    planner (it only loses the date, and is not asked again for DATA_DATE_RETRY_SECONDS)."""
+    now = time.monotonic()
+    if now < _data_end["valid_until"]:
+        return _data_end["info"]
+    info = None
+    try:
+        row = run("SELECT MAX(as_of_ts) AS as_of_ts, MAX(month_start_date_key) AS last_month_key "
+                  f"FROM {_table('kpi_equipment_month')}", {})
+        if row["as_of_ts"] is not None and row["last_month_key"] is not None:
+            month = str(row["last_month_key"])  # yyyyMMdd of the first day of the month
+            info = {"as_of": str(row["as_of_ts"])[:10], "last_month": f"{month[:4]}-{month[4:6]}"}
+    except Exception as e:  # BLE001: Databricks down, bad token, table missing...
+        logger.warning("data_date_unavailable", extra={"fields": {"error": type(e).__name__}})
+    _data_end.update(info=info, valid_until=now + (DATA_DATE_CACHE_SECONDS if info else DATA_DATE_RETRY_SECONDS))
+    return info
 
 
 def compute_kpi(request: KpiRequest, run=run_query) -> dict:

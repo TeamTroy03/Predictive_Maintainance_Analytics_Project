@@ -28,7 +28,7 @@ def memory():
 # ---------- request validation ----------
 
 @pytest.mark.parametrize("args", [
-    {"template": "equipment_failure_modes"},                                       # needs equipment_id
+    {"template": "type_failure_profile"},                                          # needs equipment_type
     {"template": "equipment_failure_modes", "equipment_id": "EQ-1", "failure_mode": "BRG-WEAR"},  # not used by it
     {"template": "failures_after", "failure_mode": "BRG-WEAR", "equipment_id": "EQ-1"},
     {"template": "repeat_failure_chain", "equipment_type": "Pump"},                   # only equipment_id is optional there
@@ -74,10 +74,10 @@ def test_equipment_failure_modes(memory):
     assert result["backend"] == "memory" and result["gold_loaded_ts"] == TS
     assert result["filters"] == {"equipment_id": "EQ-1"}
     assert result["rows"] == [
-        {"failure_mode": "BRG-WEAR", "description": "Bearing wear", "failures": 2, "downtime_hours": 11.5,
-         "repeat_failures": 1, "last_failure_ts": "2026-02-01T08:00:00.000Z"},
-        {"failure_mode": "OVERHEAT", "description": "Overheating", "failures": 1, "downtime_hours": 3.0,
-         "repeat_failures": 0, "last_failure_ts": "2026-03-01T08:00:00.000Z"},
+        {"equipment_id": "EQ-1", "failure_mode": "BRG-WEAR", "description": "Bearing wear", "failures": 2,
+         "downtime_hours": 11.5, "repeat_failures": 1, "last_failure_ts": "2026-02-01T08:00:00.000Z"},
+        {"equipment_id": "EQ-1", "failure_mode": "OVERHEAT", "description": "Overheating", "failures": 1,
+         "downtime_hours": 3.0, "repeat_failures": 0, "last_failure_ts": "2026-03-01T08:00:00.000Z"},
     ]
     assert result["row_count"] == 2 and result["limitations"]
 
@@ -106,11 +106,24 @@ def test_repeat_failure_chain_without_equipment_covers_the_fleet_newest_first():
     assert [r["work_order"] for r in one["rows"]] == ["WO-6"] and not any("Whole fleet" in x for x in one["limitations"])
 
 
+def test_equipment_failure_modes_without_equipment_covers_the_fleet_most_failures_first():
+    other = {"src_id": "Equipment:EQ-2", "dst_id": "FailureMode:OVERHEAT", "edge_type": "EXPERIENCED_FAILURE",
+             "weight": 5.0, "properties": '{"downtime_hours": 9.0, "repeat_failures": 2, "last_failure_ts": "2026-04-01"}'}
+    store = MemoryStore(loader=lambda: (NODES, [*EDGES, other], TS))
+    result = store.query(request("equipment_failure_modes"))
+    assert [(r["equipment_id"], r["failure_mode"], r["failures"]) for r in result["rows"]] == [
+        ("EQ-2", "OVERHEAT", 5), ("EQ-1", "BRG-WEAR", 2), ("EQ-1", "OVERHEAT", 1)]
+    assert result["filters"] == {} and any("Whole fleet" in lim for lim in result["limitations"])
+    one = store.query(request("equipment_failure_modes", equipment_id="EQ-2"))
+    assert [r["equipment_id"] for r in one["rows"]] == ["EQ-2"] and not any("Whole fleet" in x for x in one["limitations"])
+
+
 def test_blank_arguments_count_as_not_given(memory):
     assert request("repeat_failure_chain", equipment_id="  ").equipment_id is None
     assert request("failures_after", failure_mode="BRG-WEAR", equipment_type="").equipment_type is None
     with pytest.raises(ValueError):  # a required argument left blank is still missing
-        request("equipment_failure_modes", equipment_id="")
+        request("type_failure_profile", equipment_type="")
+    assert request("equipment_failure_modes", equipment_id="").equipment_id is None
     assert memory.query(request("repeat_failure_chain", equipment_id=""))["row_count"] == 1
 
 
@@ -197,6 +210,15 @@ def test_neo4j_store_failures_after_params():
                                                  "label": "Bearing wear"}})
     Neo4jStore(runner).query(request("failures_after", failure_mode="Bearing wear"))
     assert runner.calls[-1][1] == {"mode": "BRG-WEAR", "type": None, "limit": 20}
+
+
+def test_neo4j_store_equipment_failure_modes_params():
+    runner = FakeRunner(nodes={"eq-1": EQ1})
+    store = Neo4jStore(runner)
+    store.query(request("equipment_failure_modes"))
+    assert runner.calls[-1] == (CYPHER["equipment_failure_modes"], {"equipment": None, "limit": 20})
+    store.query(request("equipment_failure_modes", equipment_id="eq-1"))
+    assert runner.calls[-1][1] == {"equipment": "Equipment:EQ-1", "limit": 20}
 
 
 def test_neo4j_store_repeat_failure_chain_params():
@@ -286,7 +308,7 @@ def test_query_graph_tool(monkeypatch, memory):
 
 def test_query_graph_tool_reports_invalid_requests(monkeypatch, memory):
     monkeypatch.setattr(graph_tools, "_service", GraphService(None, memory))
-    out = query_graph.invoke({"template": "equipment_failure_modes"})
+    out = query_graph.invoke({"template": "type_failure_profile"})
     assert out["error"].startswith("Invalid graph request")
 
 

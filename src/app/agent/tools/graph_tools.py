@@ -37,8 +37,10 @@ _SEQUENCE = ("Follows means the next unplanned failure of the same equipment, in
 # template -> arguments, what it returns and its limits; the Cypher and the in-memory code below follow the same specs
 TEMPLATES = {
     "equipment_failure_modes": {
-        "requires": ("equipment_id",), "optional": (), "source": "EXPERIENCED_FAILURE",
-        "returns": "failure modes this equipment experienced: failures, downtime_hours, repeat_failures, last_failure_ts",
+        "requires": (), "optional": ("equipment_id",), "source": "EXPERIENCED_FAILURE",
+        "returns": "failure modes of one equipment, or the equipment and failure-mode pairs with the most failures of the "
+                   "whole fleet when no equipment_id is given: equipment_id, failures, downtime_hours, repeat_failures, "
+                   "last_failure_ts",
         "limitations": [_RECENT, _NO_PERIOD]},
     "type_failure_profile": {
         "requires": ("equipment_type",), "optional": (), "source": "TYPE_PRONE_TO",
@@ -56,6 +58,14 @@ TEMPLATES = {
         "limitations": [_RECENT, _SEQUENCE]},
 }
 TemplateName = Literal[*TEMPLATES]
+
+# added to the result when the template ran without its optional equipment_id (the whole fleet)
+FLEET_LIMITATIONS = {
+    "equipment_failure_modes": "Whole fleet: the equipment and failure-mode pairs with the most failures are listed "
+                               "(capped), not totals per equipment. Use type_failure_profile for a whole equipment type.",
+    "repeat_failure_chain": "Whole fleet: the most recent repeat failures are listed, not a ranking of equipment. "
+                            "Use equipment_failure_modes for the repeat counts of one equipment.",
+}
 
 # request field -> node type it names
 ENTITY_FIELDS = {"equipment_id": "Equipment", "equipment_type": "EquipmentType", "failure_mode": "FailureMode"}
@@ -159,9 +169,8 @@ class GraphStore:
                     missing.append(f"{field} '{value}'")
         rows = [] if missing else [_clean(r) for r in self.rows(request.template, found, request.limit)]
         limitations = list(spec["limitations"])
-        if request.template == "repeat_failure_chain" and request.equipment_id is None:
-            limitations.append("Whole fleet: the most recent repeat failures are listed, not a ranking of equipment. "
-                               "Use equipment_failure_modes for the repeat counts of one equipment.")
+        if request.template in FLEET_LIMITATIONS and request.equipment_id is None:
+            limitations.append(FLEET_LIMITATIONS[request.template])
         if missing:
             limitations.append(f"Not found in the graph: {', '.join(missing)}. Check the spelling.")
         elif not rows:
@@ -227,19 +236,19 @@ class MemoryStore(GraphStore):
 
     def rows(self, template, found, limit):
         g = self._graph()
-        if template in ("equipment_failure_modes", "type_failure_profile"):
-            owner, edge_type = (("equipment_id", "EXPERIENCED_FAILURE") if template == "equipment_failure_modes"
-                                else ("equipment_type", "TYPE_PRONE_TO"))
-            rows = []
-            for mode, d in self._out(found[owner]["node_id"], edge_type):
-                row = {"failure_mode": g.nodes[mode]["business_key"], "description": g.nodes[mode]["label"],
-                       "failures": int(d["weight"])}
-                if template == "equipment_failure_modes":
-                    row |= {"downtime_hours": d.get("downtime_hours"), "repeat_failures": d.get("repeat_failures"),
-                            "last_failure_ts": d.get("last_failure_ts")}
-                else:
-                    row |= {"equipment_affected": d.get("equipment_affected"), "downtime_hours": d.get("downtime_hours")}
-                rows.append(row)
+        if template == "equipment_failure_modes":
+            wanted = found["equipment_id"]["node_id"] if "equipment_id" in found else None  # None = whole fleet
+            rows = [{"equipment_id": g.nodes[equipment]["business_key"], "failure_mode": g.nodes[mode]["business_key"],
+                     "description": g.nodes[mode]["label"], "failures": int(d["weight"]),
+                     "downtime_hours": d.get("downtime_hours"), "repeat_failures": d.get("repeat_failures"),
+                     "last_failure_ts": d.get("last_failure_ts")}
+                    for equipment, mode, d in self._by_type["EXPERIENCED_FAILURE"] if wanted in (None, equipment)]
+            rows.sort(key=lambda r: (-r["failures"], r["equipment_id"], r["failure_mode"]))
+        elif template == "type_failure_profile":
+            rows = [{"failure_mode": g.nodes[mode]["business_key"], "description": g.nodes[mode]["label"],
+                     "failures": int(d["weight"]), "equipment_affected": d.get("equipment_affected"),
+                     "downtime_hours": d.get("downtime_hours")}
+                    for mode, d in self._out(found["equipment_type"]["node_id"], "TYPE_PRONE_TO")]
             rows.sort(key=lambda r: (-r["failures"], r["failure_mode"]))
         elif template == "repeat_failure_chain":
             wanted = found["equipment_id"]["node_id"] if "equipment_id" in found else None  # None = whole fleet
@@ -282,10 +291,11 @@ META_CYPHER = "MATCH (m:GraphMeta {id: 'kg'}) RETURN m.gold_loaded_ts AS ts"
 # One fixed, parameterised query per template; values are only ever bound parameters.
 CYPHER = {
     "equipment_failure_modes": (
-        "MATCH (:Node {node_id: $equipment})-[r:EXPERIENCED_FAILURE]->(f:Node) "
-        "RETURN f.business_key AS failure_mode, f.label AS description, toInteger(r.weight) AS failures, "
-        "r.downtime_hours AS downtime_hours, r.repeat_failures AS repeat_failures, r.last_failure_ts AS last_failure_ts "
-        "ORDER BY failures DESC, failure_mode LIMIT $limit"),
+        "MATCH (e:Node)-[r:EXPERIENCED_FAILURE]->(f:Node) WHERE $equipment IS NULL OR e.node_id = $equipment "
+        "RETURN e.business_key AS equipment_id, f.business_key AS failure_mode, f.label AS description, "
+        "toInteger(r.weight) AS failures, r.downtime_hours AS downtime_hours, r.repeat_failures AS repeat_failures, "
+        "r.last_failure_ts AS last_failure_ts "
+        "ORDER BY failures DESC, equipment_id, failure_mode LIMIT $limit"),
     "type_failure_profile": (
         "MATCH (:Node {node_id: $type})-[r:TYPE_PRONE_TO]->(f:Node) "
         "RETURN f.business_key AS failure_mode, f.label AS description, toInteger(r.weight) AS failures, "
@@ -402,8 +412,9 @@ def get_service() -> GraphService:
 def query_graph(template: TemplateName, equipment_id: str | None = None, equipment_type: str | None = None,
                 failure_mode: str | None = None, limit: int = 20) -> dict:
     """Answer relationship questions from the knowledge graph of the Gold layer (never guess them yourself).
-    Pick one template: equipment_failure_modes (needs equipment_id): failure modes this equipment experienced, with
-    failures, downtime hours and repeat failures; type_failure_profile (needs equipment_type): failure modes of one
+    Pick one template: equipment_failure_modes (equipment_id optional): failure modes of one equipment, with failures,
+    downtime hours and repeat failures, or, without equipment_id, the equipment and failure-mode pairs with the most
+    failures in the whole fleet (use it for "which equipment fails most"); type_failure_profile (needs equipment_type): failure modes of one
     equipment type; repeat_failure_chain (equipment_id optional): repeat failures and the earlier work orders they
     repeat, of one equipment or, without equipment_id, of the whole fleet, newest first (use it for "which equipment
     have repeat failures": leave equipment_id out); failures_after (needs failure_mode, optional equipment_type): which failure modes follow the given one on

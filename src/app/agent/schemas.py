@@ -12,9 +12,12 @@ class PlanStep(BaseModel):
     purpose: str
 
 
+MAX_PLAN_STEPS = 7  # one step is one tool call; the planner prompt quotes this number too
+
+
 class Plan(BaseModel):
     approach: str
-    steps: list[PlanStep] = Field(max_length=4)
+    steps: list[PlanStep] = Field(max_length=MAX_PLAN_STEPS)
 
 
 class PlanReview(BaseModel):

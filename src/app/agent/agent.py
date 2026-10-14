@@ -36,7 +36,7 @@ from app.agent.tools.detail_tools import (
     run_detail_sql,
 )
 from app.agent.tools.graph_tools import GraphRequest, query_graph
-from app.agent.tools.kpi_tools import KPIS, KpiRequest, get_kpi
+from app.agent.tools.kpi_tools import KPIS, KpiRequest, data_available_until, get_kpi
 
 load_dotenv()
 
@@ -128,6 +128,15 @@ def _today() -> str:
     return datetime.now(UTC).date().isoformat()
 
 
+def _data_note() -> str:
+    """Sentence for the planner and judge prompts saying where the Gold data ends ("" if Databricks cannot tell)."""
+    info = data_available_until()
+    if not info:
+        return ""
+    return (f"The Gold data ends on {info['as_of']}; the last month with data is {info['last_month']} "
+            "(it may be only partly filled). ")
+
+
 # ---------- Steps ----------
 
 
@@ -141,8 +150,8 @@ def plan_text(question: str, p: Plan) -> str:
 
 def plan(question: str, feedback: str | None = None, history: str = "") -> Plan:
     note = f"\n\nReviewer feedback to address: {feedback}" if feedback else ""
-    return _ask(Plan, PLANNER_PROMPT, today=_today(), history=history, tool_docs=TOOL_DOCS, kpi_docs=KPI_DOCS,
-                question=question, feedback_note=note)
+    return _ask(Plan, PLANNER_PROMPT, today=_today(), data_note=_data_note(), history=history, tool_docs=TOOL_DOCS,
+                kpi_docs=KPI_DOCS, question=question, feedback_note=note)
 
 
 def check_plan(p: Plan) -> list[str]:
@@ -169,8 +178,8 @@ def check_plan(p: Plan) -> list[str]:
 
 
 def judge_plan(question: str, p: Plan, history: str = "") -> PlanReview:
-    return _ask(PlanReview, JUDGE_PROMPT, today=_today(), history=history, tool_docs=TOOL_DOCS, question=question,
-                plan=p.model_dump_json())
+    return _ask(PlanReview, JUDGE_PROMPT, today=_today(), data_note=_data_note(), history=history, tool_docs=TOOL_DOCS,
+                question=question, plan=p.model_dump_json())
 
 
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")  # 12, 1,234.5, 0.93

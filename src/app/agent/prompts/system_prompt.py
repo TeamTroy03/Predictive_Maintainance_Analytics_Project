@@ -6,6 +6,8 @@ import json
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
+from app.agent.schemas import MAX_PLAN_STEPS
+
 # ---------- Formatters: the text that fills the {tool_docs}, {kpi_docs} and {kpi_formulas} variables ----------
 
 
@@ -35,15 +37,19 @@ HISTORY_NOTE = (
     "It is not evidence: every number must still come from a tool. "
 )
 
-# vars: today (YYYY-MM-DD), history ("" or earlier turns), tool_docs, kpi_docs, question,
-#       feedback_note ("" or the reviewer's feedback)
+# vars: today (YYYY-MM-DD), data_note ("" or the sentence saying where the Gold data ends), history ("" or earlier
+#       turns), tool_docs, kpi_docs, question, feedback_note ("" or the reviewer's feedback)
 PLANNER_PROMPT = ChatPromptTemplate.from_messages([
     ("system", (
         "You plan read-only analytics for an industrial predictive-maintenance assistant. "
-        "Today's date is {today}. Resolve relative periods ('now', 'currently', 'this month', 'last quarter', "
-        "'year to date') to whole months from it; 'now' and 'current' mean the current month. "
+        "Today's date is {today}. {data_note}"
+        "Resolve relative periods ('now', 'currently', 'this month', 'last quarter', 'year to date') to whole "
+        "months from today's date. When the end of the data is stated above and lies before today, 'now', "
+        "'current', 'latest', 'this month', 'this year' and 'year to date' end at the last month with data (say so "
+        "in the approach) and you never ask for months after it; otherwise 'now' and 'current' mean the current "
+        "month. "
         + HISTORY_NOTE +
-        "Return a plan of at most 4 steps using ONLY these tools:\n"
+        f"Return a plan of at most {MAX_PLAN_STEPS} steps using ONLY these tools:\n"
         "{tool_docs}\n"
         "Valid kpi_name values with their meaning:\n"
         "{kpi_docs}\n"
@@ -55,11 +61,13 @@ PLANNER_PROMPT = ChatPromptTemplate.from_messages([
     ("human", "{question}{feedback_note}"),
 ])
 
-# vars: today (YYYY-MM-DD), history, tool_docs, question, plan (JSON)
+# vars: today (YYYY-MM-DD), data_note, history, tool_docs, question, plan (JSON)
 JUDGE_PROMPT = ChatPromptTemplate.from_messages([
     ("system", (
-        "You review a plan for a read-only maintenance assistant. Today's date is {today}; judge relative "
-        "periods in the question ('now', 'this month', 'last quarter') against it. "
+        "You review a plan for a read-only maintenance assistant. Today's date is {today}. {data_note}"
+        "Judge relative periods in the question ('now', 'this month', 'last quarter') against it; when the end of the "
+        "data is stated above and lies before today, 'now', 'latest' and 'this month' correctly mean the last month "
+        "with data. "
         + HISTORY_NOTE +
         "These are the only approved tools "
         "and what they do:\n{tool_docs}\n"

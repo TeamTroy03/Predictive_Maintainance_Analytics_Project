@@ -6,7 +6,10 @@ from types import SimpleNamespace
 import pytest
 
 from app.agent.memory import ConversationMemory
-from app.agent.schemas import AssistantAnswer, Plan, PlanReview, PlanStep
+from pydantic import ValidationError
+
+from app.agent.prompts.system_prompt import PLANNER_PROMPT
+from app.agent.schemas import MAX_PLAN_STEPS, AssistantAnswer, Plan, PlanReview, PlanStep
 from app.agent.tools import detail_tools as dt
 from app.agent.tools import kpi_tools
 from app.agent.tools.kpi_tools import KpiRequest, compute_kpi
@@ -69,6 +72,20 @@ def test_check_plan_accepts_the_approved_tools(ag):
 def test_check_plan_reports_every_bad_step(ag):
     plan = make_plan(("run_sql", {}), ("get_kpi", {"kpi_name": "availability"}))
     assert len(ag.check_plan(plan)) == 2
+
+
+# ---------------------------------------------------------------- plan size
+def test_a_plan_has_at_most_seven_steps():
+    assert MAX_PLAN_STEPS == 7
+    assert len(make_plan(*[("get_kpi", GET_KPI)] * MAX_PLAN_STEPS).steps) == 7
+    with pytest.raises(ValidationError):
+        make_plan(*[("get_kpi", GET_KPI)] * (MAX_PLAN_STEPS + 1))
+
+
+def test_the_planner_prompt_quotes_the_same_limit():
+    system = PLANNER_PROMPT.format_messages(today="2026-10-15", data_note="", history="", tool_docs="", kpi_docs="",
+                                            question="q", feedback_note="")[0].content
+    assert f"at most {MAX_PLAN_STEPS} steps" in system
 
 
 # ---------------------------------------------------------------- unverified_numbers
@@ -288,6 +305,76 @@ def test_compute_kpi_says_so_when_nothing_matches_or_the_denominator_is_zero(env
 
     undefined = compute_kpi(kpi_request(), run=lambda sql, params: fake_row(value=None))
     assert "denominator is zero" in undefined["limitations"][-1]
+
+
+# ---------------------------------------------------------------- last date of data
+@pytest.fixture
+def clock(monkeypatch):
+    """A fake clock for data_available_until's cache, and an empty cache before and after each test."""
+    now = [1000.0]
+    monkeypatch.setattr(kpi_tools, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setitem(kpi_tools._data_end, "info", None)
+    monkeypatch.setitem(kpi_tools._data_end, "valid_until", 0.0)
+    return now
+
+
+def test_data_available_until_reads_the_last_date_from_the_kpi_table(env, clock):
+    seen = []
+
+    def run(sql, params):
+        seen.append((sql, params))
+        return {"as_of_ts": "2026-09-21 12:30:00", "last_month_key": 20260901}
+
+    assert kpi_tools.data_available_until(run=run) == {"as_of": "2026-09-21", "last_month": "2026-09"}
+    sql, params = seen[0]
+    assert "MAX(as_of_ts)" in sql and "data2026acc123456.team3.test_gold_kpi_equipment_month" in sql and params == {}
+
+
+def test_data_available_until_is_cached_then_refreshed(env, clock):
+    calls = []
+
+    def run(sql, params):
+        calls.append(1)
+        return {"as_of_ts": "2026-09-21", "last_month_key": 20260901}
+
+    kpi_tools.data_available_until(run=run)
+    clock[0] += kpi_tools.DATA_DATE_CACHE_SECONDS - 1
+    kpi_tools.data_available_until(run=run)
+    assert len(calls) == 1
+    clock[0] += 2
+    kpi_tools.data_available_until(run=run)
+    assert len(calls) == 2
+
+
+def test_data_available_until_never_raises_and_does_not_hammer_a_broken_database(env, clock):
+    calls = []
+
+    def broken(sql, params):
+        calls.append(1)
+        raise ConnectionError("databricks down")
+
+    assert kpi_tools.data_available_until(run=broken) is None
+    assert kpi_tools.data_available_until(run=broken) is None  # inside the retry wait: not asked again
+    assert len(calls) == 1
+    clock[0] += kpi_tools.DATA_DATE_RETRY_SECONDS + 1
+    assert kpi_tools.data_available_until(run=lambda sql, params: {"as_of_ts": "2026-09-21",
+                                                                    "last_month_key": 20260901}) is not None
+
+
+def test_an_empty_kpi_table_gives_no_date(env, clock):
+    assert kpi_tools.data_available_until(run=lambda sql, params: {"as_of_ts": None, "last_month_key": None}) is None
+
+
+def test_the_planner_and_judge_are_told_where_the_data_ends(ag, monkeypatch):
+    monkeypatch.setattr(ag, "data_available_until", lambda: {"as_of": "2026-09-21", "last_month": "2026-09"})
+    assert "ends on 2026-09-21" in ag._data_note() and "2026-09" in ag._data_note()
+    seen = []
+    monkeypatch.setattr(ag, "_ask", lambda schema, prompt, **variables: seen.append(variables) or make_plan())
+    ag.plan("availability now?")
+    ag.judge_plan("availability now?", make_plan())
+    assert len(seen) == 2 and all("ends on 2026-09-21" in v["data_note"] for v in seen)
+    monkeypatch.setattr(ag, "data_available_until", lambda: None)
+    assert ag._data_note() == ""
 
 
 # ---------------------------------------------------------------- SQL loop and Databricks seam

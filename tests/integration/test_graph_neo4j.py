@@ -29,6 +29,7 @@ REQUESTS = [
     {"template": "equipment_failure_modes", "equipment_id": "EQ-1"},
     {"template": "equipment_failure_modes", "equipment_id": "eq-3"},
     {"template": "equipment_failure_modes", "equipment_id": "EQ-999"},
+    {"template": "equipment_failure_modes"},
     {"template": "type_failure_profile", "equipment_type": "Pump"},
     {"template": "type_failure_profile", "equipment_type": "Pump", "limit": 1},
     {"template": "repeat_failure_chain", "equipment_id": "EQ-1"},

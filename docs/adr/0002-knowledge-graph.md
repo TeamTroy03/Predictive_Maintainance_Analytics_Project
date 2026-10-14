@@ -29,9 +29,11 @@ to fail after what. The assistant must still not fabricate data or bypass the go
 * **One tool, `query_graph`, with a closed set of templates** (`equipment_failure_modes`, `type_failure_profile`,
   `repeat_failure_chain`, `failures_after`). The LLM picks a template and typed arguments; it never writes Cypher. Arguments
   are validated by `GraphRequest` in `check_plan` and in the tool; Neo4j queries are fixed strings with bound parameters in a
-  read session. The human approval step and the number check are unchanged. `repeat_failure_chain` takes an optional
-  `equipment_id`: without it the template lists the most recent repeat failures of the whole fleet (a blank argument
-  counts as not given), so "which equipment have repeat failures?" passes `check_plan`; it is not a ranking per asset.
+  read session. The human approval step and the number check are unchanged. `repeat_failure_chain` and
+  `equipment_failure_modes` take an optional `equipment_id`: without it they cover the whole fleet (the most recent repeat
+  failures, or the equipment/failure-mode pairs with most failures, both capped and flagged with a "Whole fleet"
+  limitation; a blank argument counts as not given), so "which equipment have repeat failures?" passes `check_plan`.
+  `type_failure_profile` and `failures_after` keep their own required arguments, so a forgotten id is still caught.
 * The graph answers relationship questions. Figures over periods stay with `get_kpi`, so measure logic is not duplicated.
 
 ## Consequences

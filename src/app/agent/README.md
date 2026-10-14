@@ -32,7 +32,7 @@ approves it, and only then are the approved tools run.
 | File | Contents |
 |---|---|
 | `agent.py` | The graph, `check_plan`, `execute`, the number check, logging, and the entry points (`run`, `start_run`, `finish_run`) |
-| `prompts/system_prompt.py` | The `ChatPromptTemplate`s (planner, judge, summary, executor, SQL writer) and the formatters that fill `{tool_docs}`, `{kpi_docs}`, `{kpi_formulas}`. The planner and judge prompts also get `{today}` and `{history}` |
+| `prompts/system_prompt.py` | The `ChatPromptTemplate`s (planner, judge, summary, executor, SQL writer) and the formatters that fill `{tool_docs}`, `{kpi_docs}`, `{kpi_formulas}`. The planner and judge prompts also get `{today}`, `{data_note}` (where the Gold data ends) and `{history}` |
 | `memory.py` | Conversation memory (Redis or in-process), see [Conversation memory](#conversation-memory-memorypy) |
 | `schemas.py` | `Plan`, `PlanStep`, `PlanReview`, `AssistantAnswer` and the graph `State` |
 | `tools/` | The approved tools, see [`tools/README.md`](tools/README.md) |
@@ -46,7 +46,7 @@ question ─► planner ─► evaluator ─┬─ approve ─► approval (inte
 
 | Node | What it does |
 |---|---|
-| `planner` | LLM (structured output `Plan`: approach + at most 4 `PlanStep(tool, args, purpose)`) using only the tools in `TOOLS`. On a revision it also receives the reviewer's feedback. |
+| `planner` | LLM (structured output `Plan`: approach + at most 7 `PlanStep(tool, args, purpose)`, `MAX_PLAN_STEPS` in `schemas.py`) using only the tools in `TOOLS`. On a revision it also receives the reviewer's feedback. |
 | `evaluator` | First `check_plan` (deterministic, no LLM), then `judge_plan` (LLM, `PlanReview`: `approve` / `revise` / `reject`). A deterministic violation goes straight back to the planner as `revise` without calling the judge LLM. On `approve` it also builds `plan_text` (only a plain-language summary for the business user; tool names and arguments stay in `State["plan"]` and the `plan_created` log). |
 | `approval` | Calls LangGraph `interrupt(plan_text)` and pauses until the user approves or declines. |
 | `executor` | If the plan was not approved nothing is executed and an empty answer with the reason in `limitations` is returned. Otherwise `execute()` runs the steps (see below). |
@@ -140,8 +140,13 @@ No secrets in code; deployed secrets come from Azure Key Vault.
 ### Today's date
 
 The planner and judge prompts state today's date (UTC, read on every call by `_today()` in `agent.py`), so
-"now", "this month" or "last quarter" become whole `YYYY-MM` months. "Now" means the current month; Gold may not
-have data for all of it yet, `get_kpi` reports the as-of date and limitations.
+"now", "this month" or "last quarter" become whole `YYYY-MM` months. They also state where the Gold data ends
+(`{data_note}`, built by `_data_note()` from `data_available_until()` in `tools/kpi_tools.py`): the Gold run's
+`as_of_ts` and the last KPI month, read with one `MAX(...)` query on `gold_kpi_equipment_month`. When the data ends
+before today, "now", "latest", "this month" and "year to date" end at that last month, and the planner is told never
+to ask for later months; the judge applies the same rule. The lookup is cached for `DATA_DATE_CACHE_SECONDS` (default
+600), never raises, and after a failure is not retried for 60 s; without it the prompts fall back to the older rule
+("now" is the current month) and `get_kpi` reports the as-of date and limitations.
 
 ### Conversation memory (`memory.py`)
 
