@@ -18,7 +18,7 @@ from typing import Literal
 
 import networkx as nx
 from langchain_core.tools import tool
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from app.agent.tools.detail_tools import run_rows
 
@@ -45,9 +45,9 @@ TEMPLATES = {
         "returns": "failure modes of one equipment type: failures, equipment_affected, downtime_hours",
         "limitations": [_RECENT, _NO_PERIOD]},
     "repeat_failure_chain": {
-        "requires": ("equipment_id",), "optional": (), "source": "REPEATED_FAILURE",
-        "returns": "repeat failures of one equipment: each work order with the earlier work order it repeats, its "
-                   "failure mode and gap_days",
+        "requires": (), "optional": ("equipment_id",), "source": "REPEATED_FAILURE",
+        "returns": "repeat failures of one equipment, or of the whole fleet when no equipment_id is given, newest first: "
+                   "each work order with its equipment_id, the earlier work order it repeats, its failure mode and gap_days",
         "limitations": ["A repeat failure is the same equipment and failure mode again within 30 days (Gold rule)."]},
     "failures_after": {
         "requires": ("failure_mode",), "optional": ("equipment_type",), "source": "FOLLOWED_BY",
@@ -69,6 +69,12 @@ class GraphRequest(BaseModel):
     equipment_type: str | None = Field(None, pattern=_NAME)
     failure_mode: str | None = Field(None, pattern=_NAME)  # code (BRG-WEAR) or description (Bearing wear)
     limit: int = Field(20, ge=1, le=MAX_LIMIT)
+
+    @field_validator("equipment_id", "equipment_type", "failure_mode", mode="before")
+    @classmethod
+    def _blank_means_not_given(cls, value):
+        """The LLM often sends "" instead of null for an argument it leaves out."""
+        return None if isinstance(value, str) and not value.strip() else value
 
     @model_validator(mode="after")
     def _arguments_fit_the_template(self):
@@ -153,6 +159,9 @@ class GraphStore:
                     missing.append(f"{field} '{value}'")
         rows = [] if missing else [_clean(r) for r in self.rows(request.template, found, request.limit)]
         limitations = list(spec["limitations"])
+        if request.template == "repeat_failure_chain" and request.equipment_id is None:
+            limitations.append("Whole fleet: the most recent repeat failures are listed, not a ranking of equipment. "
+                               "Use equipment_failure_modes for the repeat counts of one equipment.")
         if missing:
             limitations.append(f"Not found in the graph: {', '.join(missing)}. Check the spelling.")
         elif not rows:
@@ -233,16 +242,19 @@ class MemoryStore(GraphStore):
                 rows.append(row)
             rows.sort(key=lambda r: (-r["failures"], r["failure_mode"]))
         elif template == "repeat_failure_chain":
+            wanted = found["equipment_id"]["node_id"] if "equipment_id" in found else None  # None = whole fleet
             rows = []
-            for work_order, _, key in g.in_edges(found["equipment_id"]["node_id"], keys=True):
-                if key != "PERFORMED_ON":
+            for work_order, earlier, d in self._by_type["REPEATED_FAILURE"]:
+                equipment = next((e for e, _ in self._out(work_order, "PERFORMED_ON")), None)
+                if equipment is None or (wanted and equipment != wanted):
                     continue
-                for earlier, d in self._out(work_order, "REPEATED_FAILURE"):
-                    rows.append({"work_order": g.nodes[work_order]["business_key"],
-                                 "repeats_work_order": g.nodes[earlier]["business_key"],
-                                 "failure_mode": d.get("failure_mode"), "gap_days": d["weight"],
-                                 "created_ts": g.nodes[work_order].get("created_ts")})
-            rows.sort(key=lambda r: (r["created_ts"] or "", r["work_order"]))
+                rows.append({"work_order": g.nodes[work_order]["business_key"],
+                             "equipment_id": g.nodes[equipment]["business_key"],
+                             "repeats_work_order": g.nodes[earlier]["business_key"],
+                             "failure_mode": d.get("failure_mode"), "gap_days": d["weight"],
+                             "created_ts": g.nodes[work_order].get("created_ts")})
+            rows.sort(key=lambda r: r["work_order"])  # newest first, ties by work order (same as the Cypher ORDER BY)
+            rows.sort(key=lambda r: r["created_ts"] or "", reverse=True)
         else:  # failures_after
             mode = found["failure_mode"]["business_key"]
             type_id = found["equipment_type"]["node_id"] if "equipment_type" in found else None
@@ -280,11 +292,11 @@ CYPHER = {
         "r.equipment_affected AS equipment_affected, r.downtime_hours AS downtime_hours "
         "ORDER BY failures DESC, failure_mode LIMIT $limit"),
     "repeat_failure_chain": (
-        "MATCH (w:Node)-[:PERFORMED_ON]->(:Node {node_id: $equipment}) "
+        "MATCH (w:Node)-[:PERFORMED_ON]->(e:Node) WHERE $equipment IS NULL OR e.node_id = $equipment "
         "MATCH (w)-[r:REPEATED_FAILURE]->(p:Node) "
-        "RETURN w.business_key AS work_order, p.business_key AS repeats_work_order, r.failure_mode AS failure_mode, "
-        "r.weight AS gap_days, w.created_ts AS created_ts "
-        "ORDER BY coalesce(created_ts, ''), work_order LIMIT $limit"),
+        "RETURN w.business_key AS work_order, e.business_key AS equipment_id, p.business_key AS repeats_work_order, "
+        "r.failure_mode AS failure_mode, r.weight AS gap_days, w.created_ts AS created_ts "
+        "ORDER BY coalesce(created_ts, '') DESC, work_order LIMIT $limit"),
     "failures_after": (
         "MATCH (a:Node)-[f:FOLLOWED_BY]->(:Node) WHERE f.from_mode = $mode "
         "AND ($type IS NULL OR EXISTS { (a)-[:PERFORMED_ON]->(:Node)-[:IS_OF_TYPE]->(:Node {node_id: $type}) }) "
@@ -392,8 +404,9 @@ def query_graph(template: TemplateName, equipment_id: str | None = None, equipme
     """Answer relationship questions from the knowledge graph of the Gold layer (never guess them yourself).
     Pick one template: equipment_failure_modes (needs equipment_id): failure modes this equipment experienced, with
     failures, downtime hours and repeat failures; type_failure_profile (needs equipment_type): failure modes of one
-    equipment type; repeat_failure_chain (needs equipment_id): its repeat failures and the earlier work orders they
-    repeat; failures_after (needs failure_mode, optional equipment_type): which failure modes follow the given one on
+    equipment type; repeat_failure_chain (equipment_id optional): repeat failures and the earlier work orders they
+    repeat, of one equipment or, without equipment_id, of the whole fleet, newest first (use it for "which equipment
+    have repeat failures": leave equipment_id out); failures_after (needs failure_mode, optional equipment_type): which failure modes follow the given one on
     the same equipment, with occurrences and average gap in days. failure_mode is a code (BRG-WEAR) or its description
     (Bearing wear). limit is 1-50 rows (default 20). No period filter: use get_kpi for KPIs over months. The result has
     rows, filters, backend, source_measure, gold_loaded_ts and limitations."""

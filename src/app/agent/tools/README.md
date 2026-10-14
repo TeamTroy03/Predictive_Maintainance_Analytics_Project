@@ -199,7 +199,7 @@ gold_kg_* --(load_tables)--> in-process NetworkX graph                  \--> Mem
 |---|---|---|
 | `equipment_failure_modes` | `equipment_id` | per failure mode: `failures`, `downtime_hours`, `repeat_failures`, `last_failure_ts` |
 | `type_failure_profile` | `equipment_type` | per failure mode: `failures`, `equipment_affected`, `downtime_hours` |
-| `repeat_failure_chain` | `equipment_id` | each repeat failure: `work_order`, `repeats_work_order`, `failure_mode`, `gap_days`, `created_ts` |
+| `repeat_failure_chain` | optional `equipment_id` (none = whole fleet) | each repeat failure, newest first: `work_order`, `equipment_id`, `repeats_work_order`, `failure_mode`, `gap_days`, `created_ts` |
 | `failures_after` | `failure_mode`, optional `equipment_type` | per next failure mode: `occurrences`, `avg_gap_days` |
 
 `limit` is 1-50 (default 20). `GraphRequest` (pydantic, `extra="forbid"`) rejects missing or unused arguments for the template and

@@ -33,6 +33,7 @@ REQUESTS = [
     {"template": "type_failure_profile", "equipment_type": "Pump", "limit": 1},
     {"template": "repeat_failure_chain", "equipment_id": "EQ-1"},
     {"template": "repeat_failure_chain", "equipment_id": "EQ-2"},
+    {"template": "repeat_failure_chain"},
     {"template": "failures_after", "failure_mode": "BRG-WEAR"},
     {"template": "failures_after", "failure_mode": "Bearing wear", "equipment_type": "Pump"},
     {"template": "failures_after", "failure_mode": "Bearing wear", "equipment_type": "Motor"},

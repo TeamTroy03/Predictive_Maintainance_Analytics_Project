@@ -31,6 +31,7 @@ def memory():
     {"template": "equipment_failure_modes"},                                       # needs equipment_id
     {"template": "equipment_failure_modes", "equipment_id": "EQ-1", "failure_mode": "BRG-WEAR"},  # not used by it
     {"template": "failures_after", "failure_mode": "BRG-WEAR", "equipment_id": "EQ-1"},
+    {"template": "repeat_failure_chain", "equipment_type": "Pump"},                   # only equipment_id is optional there
     {"template": "type_failure_profile", "equipment_type": "Pump", "limit": 0},
     {"template": "type_failure_profile", "equipment_type": "Pump", "limit": 51},
     {"template": "type_failure_profile", "equipment_type": "Pump'}) MATCH (n) DETACH DELETE n //"},
@@ -89,9 +90,28 @@ def test_type_failure_profile(memory):
 
 def test_repeat_failure_chain(memory):
     rows = memory.query(request("repeat_failure_chain", equipment_id="EQ-1"))["rows"]
-    assert rows == [{"work_order": "WO-2", "repeats_work_order": "WO-1", "failure_mode": "BRG-WEAR", "gap_days": 5.5,
-                     "created_ts": "2026-02-01T08:00:00.000Z"}]
+    assert rows == [{"work_order": "WO-2", "equipment_id": "EQ-1", "repeats_work_order": "WO-1",
+                     "failure_mode": "BRG-WEAR", "gap_days": 5.5, "created_ts": "2026-02-01T08:00:00.000Z"}]
     assert memory.query(request("repeat_failure_chain", equipment_id="EQ-2"))["rows"] == []
+
+
+def test_repeat_failure_chain_without_equipment_covers_the_fleet_newest_first():
+    later_repeat = {"src_id": "WorkOrder:WO-6", "dst_id": "WorkOrder:WO-4", "edge_type": "REPEATED_FAILURE",
+                    "weight": 3.0, "properties": '{"failure_mode": "OVERHEAT"}'}  # on EQ-2, newer than WO-2 of EQ-1
+    store = MemoryStore(loader=lambda: (NODES, [*EDGES, later_repeat], TS))
+    result = store.query(request("repeat_failure_chain"))
+    assert [(r["work_order"], r["equipment_id"]) for r in result["rows"]] == [("WO-6", "EQ-2"), ("WO-2", "EQ-1")]
+    assert result["filters"] == {} and any("Whole fleet" in lim for lim in result["limitations"])
+    one = store.query(request("repeat_failure_chain", equipment_id="eq-2"))
+    assert [r["work_order"] for r in one["rows"]] == ["WO-6"] and not any("Whole fleet" in x for x in one["limitations"])
+
+
+def test_blank_arguments_count_as_not_given(memory):
+    assert request("repeat_failure_chain", equipment_id="  ").equipment_id is None
+    assert request("failures_after", failure_mode="BRG-WEAR", equipment_type="").equipment_type is None
+    with pytest.raises(ValueError):  # a required argument left blank is still missing
+        request("equipment_failure_modes", equipment_id="")
+    assert memory.query(request("repeat_failure_chain", equipment_id=""))["row_count"] == 1
 
 
 def test_failures_after_fleet_and_by_type(memory):
@@ -177,6 +197,15 @@ def test_neo4j_store_failures_after_params():
                                                  "label": "Bearing wear"}})
     Neo4jStore(runner).query(request("failures_after", failure_mode="Bearing wear"))
     assert runner.calls[-1][1] == {"mode": "BRG-WEAR", "type": None, "limit": 20}
+
+
+def test_neo4j_store_repeat_failure_chain_params():
+    runner = FakeRunner(nodes={"eq-1": EQ1})
+    store = Neo4jStore(runner)
+    store.query(request("repeat_failure_chain"))
+    assert runner.calls[-1] == (CYPHER["repeat_failure_chain"], {"equipment": None, "limit": 20})
+    store.query(request("repeat_failure_chain", equipment_id="eq-1"))
+    assert runner.calls[-1][1] == {"equipment": "Equipment:EQ-1", "limit": 20}
 
 
 def test_neo4j_store_refuses_an_empty_graph():
