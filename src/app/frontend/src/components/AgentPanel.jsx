@@ -105,7 +105,7 @@ export function AgentProvider({ children }) {
 }
 
 // One example that exercises all three tools (get_kpi, query_kpi_table, query_graph)
-const SUGGESTION = 'For EQ-10001, what were its availability and MTTR over the last 3 months, which sites have the highest unplanned downtime in that period, and which failure modes keep recurring on it?'
+const SUGGESTION = 'Which assets have repeat failures, and what was their maintenance cost?'
 
 export default function AgentPanel() {
   const { open, setOpen, messages, setMessages, busy, awaitingApproval, ask, decide, context } = useAgent()
